@@ -16,11 +16,12 @@ cargo run
 If Cargo is not on PATH on the development host, use
 `/Users/santiagoperez/.cargo/bin/cargo` in place of `cargo`. This project does not
 change PATH, install system packages, or configure the sender globally.
-Using only the sender's documented per-run options, target
-`http://127.0.0.1:8001/emote`; see the [wire protocol](docs/protocol.md).
-Actual external sender integration has **not yet been run**; the
-[manual verification checklist](docs/testing.md) explains the remaining steps
-without assuming a sender CLI or configuration schema.
+Target `http://127.0.0.1:8001/emote`; see the [wire protocol](docs/protocol.md).
+The local Gentle Emote fork has no sender CLI; a bounded integration used its
+production `ExternalDisplay` API with an explicit per-run loopback destination.
+Two distinct composed PNGs reached the production desktop receiver with HTTP 204.
+See the [recorded evidence and manual checklist](docs/testing.md) for scope and
+limits; no sender source or global destination was intentionally changed.
 
 A busy port or native window/backend startup failure is reported on stderr with
 a nonzero exit; there is no silent fallback port. Exact OS error codes and text
@@ -69,7 +70,7 @@ native graphics/toolchain libraries are required.
 
 The native framebuffer smoke passed on the macOS development host using a
 protocol-compatible test sender, including HTTP 204 and port release. This is
-not human visual confirmation of topmost, drag, or menu behavior. Those checks,
-actual external sender integration, and Windows/Linux execution remain
-outstanding. On Wayland, topmost placement and window moves depend on compositor
-support/policy.
+not human visual confirmation of topmost, drag, or menu behavior. Real sender
+transport was separately exercised; per-real-frame framebuffer capture was not.
+Human window checks and Windows/Linux execution remain outstanding. On Wayland,
+topmost placement and window moves depend on compositor support/policy.

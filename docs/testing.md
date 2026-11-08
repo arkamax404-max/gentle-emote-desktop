@@ -2,9 +2,9 @@
 
 Start with the headless suite, then use native checks only in a suitable graphical
 session. Socket tests, framebuffer capture, human window inspection, and a real
-external sender each establish different things. The external sender integration
-has **not** been run; Windows/Linux execution and human visual OS-behavior checks
-also remain outstanding.
+external sender each establish different things. The real sender transport check
+below passed; it did not capture each real frame's framebuffer. Windows/Linux
+execution and human visual OS-behavior checks remain outstanding.
 
 ## Default developer checks
 
@@ -132,6 +132,51 @@ the separately requested native startup test, format, Clippy, and build checks.
 These are recorded implementation results, not a claim that the documentation
 change reran them. The smoke uses its own test sender, **not the actual external
 Gentle Emote sender**, and does not use production port 8001.
+
+## Recorded real sender transport integration
+
+A separate bounded check used the existing production desktop executable and the
+local Gentle Emote fork's production `ExternalDisplay` API (version 0.1.4,
+commit `3bc14addc36a557ae30f5feb040c5d2a55dfae88`, pre-existing dirty files retained).
+Node 26.3.1 imported only the single-target sender/rendering path, not extension
+startup or layered configuration. An explicit per-run destination and guarded
+real fetch restricted all requests to `http://127.0.0.1:8001/emote`, rejecting
+redirects. There is no documented sender CLI; no CLI flag is implied by this test.
+
+Before sending, the port was free; `lsof` then confirmed that the newly launched,
+owned production process was its loopback listener. One sender instance delivered
+two distinct composed PNGs sequentially:
+
+| Asset | Composed bytes | HTTP response | Stream sequence |
+| --- | ---: | --- | ---: |
+| `gentleman/idle/idle.png` | 591 | 204, empty body | 1 |
+| `gentleman/idle/idle_blink.png` | 582 | 204, empty body | 2 |
+
+Both had valid PNG signatures and 64×64 IHDR dimensions, protocol version 1,
+`Content-Type: image/png`, correct idle/gentleman/frame metadata, and the same
+stream identifier. The payload digests differed; neither delivery was overwritten
+by a pending selection. Node exited 0 with empty stderr and no error callbacks.
+The desktop stayed alive, with empty stdout/stderr after both deliveries.
+
+Cleanup intentionally terminated only the owned app with SIGTERM (exit −15).
+This is not graceful `Drop` evidence; the earlier native smoke provides that
+separately. The orchestration exited 1 at an immediate plain Python socket rebind
+(`EADDRINUSE`). A subsequent bounded cleanup observation found no listener and
+successfully bound/listened with `SO_REUSEADDR`. No integration rerun occurred;
+the plain rebind was not shown to be equivalent to the production listener.
+
+Preservation checks found desktop source unchanged and the sender's three
+pre-existing dirty status entries unchanged under the same user Git configuration.
+Four `.DS_Store` entries visible without global Git configuration were not proof
+of writes: their timestamps predated the probe, and `git check-ignore` traced all
+four to the existing global `.DS_Store` rule. No files were removed or normalized.
+A planned optional byte-hash comparison was interrupted and its preflight hashes
+were not persisted, so byte-identical before/after contents are not claimed.
+No sender source/global configuration write was issued or intended.
+
+This establishes real composition/delivery to the actual receiver, not human
+visual behavior or framebuffer capture of these two real frames. The generic
+native framebuffer smoke above remains separate evidence.
 
 ## Final manual verification — still outstanding
 
