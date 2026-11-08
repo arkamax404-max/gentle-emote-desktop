@@ -1,2 +1,3 @@
-//! Bounded loopback receiver for the future native emote window.
+//! Local PNG receiver and its native desktop presentation.
+pub mod app;
 pub mod receiver;

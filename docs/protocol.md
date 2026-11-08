@@ -1,13 +1,13 @@
 # Local emote receiver
 
 This Rust library is the network half of the desktop application. It accepts the
-existing sender's PNG protocol and exposes the latest decoded frame to a future
-egui/eframe window. There is no GUI or executable in this work unit.
+existing sender's PNG protocol and exposes the latest decoded frame to the native
+egui/eframe window. Run and interaction instructions are in the [README](../README.md).
 
 ## Use from a window
 
 The package is `gentle-emote-desktop`; the Rust library name is
-`gentle_emote_desktop`. It uses no platform GUI dependencies yet.
+`gentle_emote_desktop`. The executable uses eframe/egui with the Glow renderer.
 
 ```rust
 use gentle_emote_desktop::receiver::Receiver;
@@ -154,10 +154,11 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-Tests use real TCP/HTTP requests on ephemeral 127.0.0.1 ports, with no system
-packages or running GUI required. They assert status/body and retained image plus
-notification count on rejection, inclusive byte bounds, chunked transfers, body
+Receiver tests use real TCP/HTTP requests on ephemeral 127.0.0.1 ports, with no
+system packages or running GUI required. They assert status/body and retained
+image plus notification count on rejection, inclusive byte bounds, chunked transfers, body
 and header deadlines, recovery, replacement, concurrent publication, bind errors,
 and both shutdown paths. There are no test scratch directories. The source is
 intended for macOS, Windows, and Linux; passing on one host is not execution proof
-on the other platforms. Native GUI behavior belongs to the next work unit.
+on the other platforms. The README describes the separate native GUI smoke and
+its limits; headless tests alone do not establish OS window behavior.
