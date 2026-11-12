@@ -61,7 +61,8 @@ fn fixed_square_frameless_topmost_options() {
         options.viewport.window_level,
         Some(egui::WindowLevel::AlwaysOnTop)
     );
-    assert_eq!(options.viewport.transparent, Some(false));
+    // Native capability is enabled; painting still defaults to opaque black.
+    assert_eq!(options.viewport.transparent, Some(true));
 }
 
 #[test]
@@ -93,7 +94,7 @@ fn waiting_text_and_secondary_menu_do_not_start_drag() {
             .contains(&ViewportCommand::StartDrag)
     );
     let text = format!("{:?}", output.shapes);
-    for label in ["128", "192", "256", "384", "Exit"] {
+    for label in ["128", "192", "256", "384", "Transparent background", "Exit"] {
         assert!(text.contains(label), "missing {label}: {text}");
     }
 }
@@ -155,6 +156,88 @@ fn menu_actions_resize_square_or_close_without_dragging() {
     }
 }
 
+fn toggle_background(ctx: &egui::Context, app: &mut EmoteApp) {
+    let p = Pos2::new(20.0, 20.0);
+    step(
+        ctx,
+        app,
+        vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Secondary, true),
+        ],
+    );
+    step(ctx, app, vec![button(p, PointerButton::Secondary, false)]);
+    let output = step(ctx, app, vec![]);
+    let p = output
+        .shapes
+        .iter()
+        .find_map(|shape| {
+            if let egui::Shape::Text(text) = &shape.shape
+                && text.galley.text() == "Transparent background"
+            {
+                return Some(text.pos + Vec2::splat(4.0));
+            }
+            None
+        })
+        .expect("transparency checkbox must be painted");
+    step(
+        ctx,
+        app,
+        vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Primary, true),
+        ],
+    );
+    let output = step(ctx, app, vec![button(p, PointerButton::Primary, false)]);
+    assert!(
+        output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .is_empty(),
+        "toggle must not move, resize, or close the window"
+    );
+}
+
+fn has_black_background(output: &Output) -> bool {
+    output.shapes.iter().any(|shape| {
+        matches!(&shape.shape, egui::Shape::Rect(rect)
+            if rect.rect.size() == Vec2::splat(192.0) && rect.fill == egui::Color32::BLACK)
+    })
+}
+
+#[test]
+fn background_toggle_round_trip_and_transparent_renderer_clear() {
+    let (ctx, mut app, _) = setup();
+    assert_eq!(
+        eframe::App::clear_color(&app, &egui::Visuals::default()),
+        [0.0; 4]
+    );
+    assert!(has_black_background(&step(&ctx, &mut app, vec![])));
+    toggle_background(&ctx, &mut app);
+    assert!(!has_black_background(&step(&ctx, &mut app, vec![])));
+    toggle_background(&ctx, &mut app);
+    assert!(has_black_background(&step(&ctx, &mut app, vec![])));
+}
+
+#[test]
+fn native_ui_handles_missing_window_across_background_transitions() {
+    let (ctx, mut app, _) = setup();
+    let mut frame = eframe::Frame::_new_kittest();
+    assert!(frame.winit_window().is_none());
+    for opaque in [true, false, true, false, true] {
+        for _ in 0..3 {
+            let output = Output(ctx.run_ui(input(vec![]), |ui| {
+                eframe::App::ui(&mut app, ui, &mut frame);
+            }));
+            assert_eq!(has_black_background(&output), opaque);
+            assert_eq!(
+                eframe::App::clear_color(&app, &egui::Visuals::default()),
+                [0.0; 4]
+            );
+        }
+        toggle_background(&ctx, &mut app);
+    }
+}
+
 #[test]
 fn primary_drag_requests_native_move() {
     let (ctx, mut app, _) = setup();
@@ -190,7 +273,10 @@ fn upload_only_on_new_snapshot_and_use_nearest_filter() {
             encoder
                 .write_header()
                 .unwrap()
-                .write_image_data(&[shade, 7, 9, 255].repeat(64 * 64))
+                .write_image_data(
+                    &[shade, 7, 9, 255, 0, 0, 0, 255, 80, 40, 20, 128, 0, 0, 0, 0]
+                        .repeat(64 * 64 / 4),
+                )
                 .unwrap();
         }
         let mut socket = TcpStream::connect(address).unwrap();
@@ -211,17 +297,24 @@ fn upload_only_on_new_snapshot_and_use_nearest_filter() {
         let delta = updates[0];
         assert_eq!(delta.options, egui::TextureOptions::NEAREST);
         let egui::ImageData::Color(image) = &delta.image;
-        assert!(
-            image
-                .pixels
-                .iter()
-                .all(|pixel| *pixel == egui::Color32::from_rgb(shade, 7, 9))
-        );
+        assert!(image.pixels.iter().enumerate().all(|(i, pixel)| {
+            *pixel
+                == [
+                    egui::Color32::from_rgb(shade, 7, 9),
+                    egui::Color32::BLACK,
+                    egui::Color32::from_rgba_unmultiplied(80, 40, 20, 128),
+                    egui::Color32::TRANSPARENT,
+                ][i % 4]
+        }));
+        assert!(has_black_background(&output));
+        toggle_background(&ctx, &mut app);
         let again = step(&ctx, &mut app, vec![]);
+        assert!(!has_black_background(&again));
         assert!(
             again.textures_delta.set.is_empty(),
-            "unchanged Arc must not upload"
+            "background toggle must not upload unchanged pixels"
         );
+        toggle_background(&ctx, &mut app);
     }
 }
 

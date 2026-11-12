@@ -19,7 +19,7 @@ LatestFrame: Arc<Mutex<Option<Arc<Frame>>>>
 Main/native event loop: EmoteApp::show → clone latest snapshot
     │ new Arc identity? upload/update texture; otherwise reuse it
     ▼
-egui + Glow → opaque, frameless native window
+egui + Glow → frameless native window; opaque black by default, optional transparency
 ```
 
 There is no pending-frame queue, GUI polling timer, persistence layer, or second
@@ -142,12 +142,26 @@ these bytes as premultiplied data would misinterpret partially transparent color
 texels. Menu sizes (128, 192, 256, 384 logical pixels) are integer multiples of
 64; physical dimensions also depend on the display's scale factor.
 
-The native window is opaque: PNG alpha blends against its painted background,
-not the desktop. `native_options` requests a fixed, frameless, always-on-top
-square with Glow rendering. Drag, resize, and close are viewport commands asking
-the OS to act, not promises that every compositor implements them identically.
-See [platform and evidence limits](testing.md) before drawing cross-platform
-conclusions.
+`native_options` requests a transparency-capable, fixed, frameless, always-on-top
+square with Glow rendering. `EmoteApp::clear_color` clears to transparent RGBA;
+`show` paints an opaque black surface by default. The right-click checkbox
+**Transparent background** controls a private boolean initialized to `false`.
+Enabling it omits that black surface, so unused space and PNG alpha can reveal
+the desktop where the native compositor supports transparency. Disabling it
+restores black. The choice lives only in the app instance and resets on restart;
+it is not a saved setting and does not enable click-through.
+
+Both modes use the same texture and full image UVs. The complete 64×64 image is
+uniformly fitted into a centered virtual 64×69 composition, with five source rows
+of padding above it. That added padding becomes transparent when enabled; opaque
+black pixels already in the PNG, including the sender's five-row bottom gap,
+remain black. No color-keying, cropping, or pixel rewriting occurs, and toggling
+the background does not require re-uploading an unchanged frame.
+
+Drag, resize, and close are viewport commands asking the OS to act, not promises
+that every compositor implements them identically. Desktop alpha also depends
+on the native backend/compositor. See [platform and evidence limits](testing.md)
+before drawing cross-platform conclusions.
 
 ## Small study exercises — not implemented features
 
@@ -161,5 +175,7 @@ These are reading/prediction exercises, not additional product capabilities:
    after three publications before one GUI pass, then compare with its assertion.
 3. Imagine moving `repaint()` inside the mutex guard. Explain what would happen
    if a callback called `LatestFrame::get`. Do not make that change.
-4. Find `with_transparent(false)` and `from_rgba_unmultiplied`. Explain why PNG
-   alpha support does not imply a transparent or click-through desktop window.
+4. Follow `with_transparent(true)`, `clear_color`, the conditional black surface,
+   and `from_rgba_unmultiplied`. Explain why the default still looks opaque, why
+   enabling transparency cannot remove opaque black image pixels, and why neither
+   mode enables click-through.

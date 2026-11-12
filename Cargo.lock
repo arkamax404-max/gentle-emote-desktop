@@ -727,6 +727,7 @@ dependencies = [
  "hyper-util",
  "png",
  "tokio",
+ "winit",
 ]
 
 [[package]]

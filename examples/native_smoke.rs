@@ -23,8 +23,12 @@ struct Smoke {
     capture_requested: bool,
 }
 impl eframe::App for Smoke {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.app.show(ui);
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        eframe::App::clear_color(&self.app, visuals)
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        eframe::App::ui(&mut self.app, ui, frame);
         // Metadata is public egui state, not a test-only hook in the product.
         let uploaded = ui.ctx().tex_manager().read().allocated().any(|(_, meta)| {
             meta.name == "emote"

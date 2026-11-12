@@ -21,16 +21,20 @@ If Cargo is not on PATH on the development host, substitute
 `/Users/santiagoperez/.cargo/bin/cargo` for `cargo`. These instructions do not
 install tools, modify PATH, or change sender configuration.
 
-The current default suite has **20 non-ignored tests: 14 receiver + 6 window**.
+The current source defines **24 non-ignored tests: 14 receiver + 9 window +
+1 private shadow-policy unit test**. All 24 passed on the Windows host after the
+shadow change and durable missing-native-window regression were added.
 On macOS, Cargo also lists one ignored native startup test; it is not part of
-those 20. On other platforms, that startup test is excluded by a target guard.
+those 24. On other platforms,
+that startup test is excluded by a target guard.
 A headless suite needs no running GUI, but still compiles native dependencies;
 Linux builds need suitable graphics/toolchain libraries.
 
 | Test file | What its passing tests establish |
 | --- | --- |
 | [`tests/receiver.rs`](../tests/receiver.rs), 14 | Real TCP/HTTP validation, exact status/body assertions, rejection preserving snapshot and notification count, byte/deadline/connection bounds, PNG normalization, publication ordering, snapshots, bind failures, and owned shutdown; includes three response-reader guards |
-| [`tests/window.rs`](../tests/window.rs), 6 | Headless egui options, waiting/menu text, viewport commands, exact texture pixels and nearest filtering, no redundant uploads, burst coalescing, and app-owned receiver shutdown |
+| [`tests/window.rs`](../tests/window.rs), 9 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry, no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
+| [`src/app.rs`](../src/app.rs), 1 | Checkbox-driven opaque → transparent → opaque shadow policy; no native window or compositor is exercised |
 | [`tests/startup.rs`](../tests/startup.rs), 1 ignored on macOS | An explicitly launched production process reports an occupied fixed port and terminates as expected on that host |
 
 Receiver and headless window tests bind `127.0.0.1:0`: the OS chooses an
@@ -38,12 +42,56 @@ Receiver and headless window tests bind `127.0.0.1:0`: the OS chooses an
 need production port 8001 or an existing sender. They create no scratch
 directories. Window tests inspect egui outputs without a native event loop;
 asserting `StartDrag` or `AlwaysOnTop` does not prove the OS honored the request.
+Likewise, transparent viewport options, renderer clear values, and omitted black
+paint do not prove native desktop compositing works. The private shadow-policy
+test uses the same policy that native `App::ui` applies after showing the UI.
+On Windows, the app disables the undecorated shadow in transparent mode and
+restores it in opaque mode, applying once initially and then only when the mode
+changes. A missing headless native window is a no-op. Policy assertions do not
+prove the Windows API was applied or that the visible perimeter disappeared.
+The parent observed the new focused test's initial RED run fail with three
+E0599 errors for the missing policy method. After implementation, the focused
+Windows check compiled the native API successfully but exited 101 (0 passed,
+1 failed) at `transparency checkbox must be painted`. Unlike the existing
+integration round trip, the new unit test had no idle UI pass between toggles;
+its helper now includes that pass before reopening the menu. The corrected
+focused test then passed (1 passed, 0 failed). The following full-suite attempt
+exited 101 before tests because Windows denied replacement of the running
+`target/debug/gentle-emote-desktop.exe` (OS error 5). The first independent source review found no concrete defect but ran zero tests
+because its permitted shell executor was unavailable. After the user closed the
+utility and authorized local Git Bash selection plus a new bounded verification,
+the parent passed the 23-test suite, corrected a format-check failure, and passed
+format, offline all-target check, and offline build. A new independent verifier
+copied source, Cargo cache, and bounded dependency artifacts into isolated state:
+all 23 tests, format, all-target check, the native framebuffer smoke, and an
+independent actual-App::ui missing-window probe passed. That probe initially
+failed twice because of overconstrained expectations about intermediate UI
+frames; its corrected assertions passed without changing production code.
+The missing-window regression was then added to `tests/window.rs` using existing
+helpers; the parent passed the final 24-test suite, format, and diff checks.
+Native smoke printed its documented PASS line on Windows, including HTTP 204,
+framebuffer RGB(42,99,151), and receiver port release. The independent run did
+not compare an earlier Git baseline. Actual desktop-composited shadow/perimeter
+removal, opaque restoration, and human drag/menu checks remain pending.
+
+For the transparency update, Cargo was found at
+`C:\Users\sperezm\.cargo\bin\cargo.exe` after initial attempts failed before
+running tests (Cargo absent from PATH; `/bin/bash` unavailable). Using that
+explicit path from PowerShell, all 8 focused window tests and the complete
+22-test suite passed. The first format check failed; `cargo fmt` corrected the
+formatting and the next `cargo fmt --check` passed. Clippy did not complete:
+`cargo clippy --all-targets -- -D warnings` timed out after 30 seconds while
+checking dependencies; it was not retried. The standalone Windows build and
+native framebuffer smoke subsequently passed for the shadow update as recorded
+above; compositor-level visual checks remain unverified. No RED run was observed
+before the original transparency implementation.
 
 For focused investigation, the existing test targets can be run separately:
 
 ```sh
 cargo test --test receiver
 cargo test --test window
+cargo test --lib app::tests::native_shadow_policy_follows_background_toggle_round_trip -- --exact
 ```
 
 ## Understand the test-only TCP reset correction
@@ -106,8 +154,9 @@ cargo run --example native_smoke
 ```
 
 [`examples/native_smoke.rs`](../examples/native_smoke.rs) wraps the reusable
-`EmoteApp` and `native_options`; the wrapper's observation and deadline are not
-product behavior. Its sequence is:
+`EmoteApp` and `native_options`, delegates to the product's native `App::ui`,
+and forwards its transparent renderer clear color. The wrapper's observation
+and deadline are not product behavior. Its sequence is:
 
 1. Bind a receiver on an ephemeral loopback port and share its address with an
    in-process protocol-compatible test sender thread.
@@ -127,11 +176,12 @@ nonzero on timeout. Normal completion prints:
 PASS: native startup, HTTP 204, nearest 64x64 texture, framebuffer RGB(42,99,151), clean close/port release
 ```
 
-The smoke passed on the macOS development host, as did the 20 normal tests and
-the separately requested native startup test, format, Clippy, and build checks.
-These are recorded implementation results, not a claim that the documentation
-change reran them. The smoke uses its own test sender, **not the actual external
-Gentle Emote sender**, and does not use production port 8001.
+Historically, the smoke passed on the macOS development host, as did the then
+20 normal tests and the separately requested native startup test, format,
+Clippy, and build checks. These are recorded implementation results, not a claim
+that the transparency update passed the native smoke. The
+smoke uses its own test sender, **not the actual external Gentle Emote sender**,
+and does not use production port 8001.
 
 ## Recorded real sender transport integration
 
@@ -194,13 +244,31 @@ Use this checklist to gather missing evidence, not as a record of completed work
 - [ ] With another ordinary window overlapping, visually check always-on-top
   behavior. Check primary drag, right-click size choices (128/192/256/384), and
   Exit. Confirm menu selection does not start a drag and exit releases port 8001.
+- [ ] On a contrasting desktop background, confirm the initial window surface is
+  opaque black. Right-click → **Transparent background**: check that unused space
+  and the added five-source-row top padding reveal the desktop, fully transparent
+  PNG pixels reveal it, and partial-alpha pixels blend with it. Confirm opaque
+  black PNG pixels, including the sender's bottom gap, remain black; the full
+  image and nearest-neighbor edges must remain unchanged.
+- [ ] On Windows, inspect the transparent window against a contrasting desktop:
+  confirm the native rounded shadow/thin perimeter is absent, then toggle back
+  to opaque and confirm its previous shadow policy returns. This requires a
+  compositor-level visual check; the framebuffer smoke cannot prove it.
+- [ ] Toggle back to black, then enable transparency again without sending a new
+  frame. Check there is no stale opaque surface, image loss, or unintended
+  move/resize/close. Check menu readability and primary drag in both modes; the
+  transparent surface must not become click-through. Restart and confirm the
+  option resets to off with an opaque black surface.
 - [ ] Repeat applicable build/run and human window checks on Windows and Linux;
   record OS, graphics backend, and display scale. On Wayland, record compositor
-  support/policy for topmost placement and native moves rather than promising it.
+  support/policy for topmost placement, native moves, and desktop alpha rather
+  than promising them. Record whether transparency is supported by each tested
+  backend/compositor; headless checks cannot establish it.
 
 Eframe/egui 0.37.0 with Glow is the implementation choice; X11 and Wayland source
 backends are enabled. macOS, Windows, and Linux are **source/build targets**.
-Only macOS execution evidence is currently recorded. A framebuffer pixel proves
+Native graphical execution evidence is recorded only for macOS; the transparency
+update's headless tests also passed on Windows. A framebuffer pixel proves
 part of the native rendering pipeline, not topmost placement, successful OS
 dragging, native menu usability, every display scale, or cross-platform parity.
 

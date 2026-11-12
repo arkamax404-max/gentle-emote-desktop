@@ -34,6 +34,7 @@ Exact OS error codes and text are host-specific.
 | Start with no sender | Readable waiting message and control hints |
 | Primary-button drag | Ask the OS to move the window |
 | Right-click anywhere | Size menu: 128, 192 (initial), 256, or 384 logical pixels |
+| Right-click → Transparent background | Toggle desktop transparency; off by default, for this session only |
 | Right-click → Exit | Close the window and shut down the owned receiver |
 
 Window sizes remain square; physical dimensions also follow the OS display
@@ -41,9 +42,17 @@ scale. The desktop adds black top padding equivalent to five source rows,
 balancing the sender image's existing five-row black bottom gap. The complete
 64×64 image is uniformly fitted within a virtual 64×69 composition, centered in
 the window without cropping or changing the PNG. Nearest-neighbor filtering
-keeps texel edges sharp. PNG alpha is blended over black inside an **opaque
-window**, not converted into desktop transparency. There is no click-through, theme/settings UI, persistent state,
-background service, installer, or automatic sender configuration.
+keeps texel edges sharp. The background is **opaque black by default**. Enable
+**Transparent background** in the right-click menu to make the added padding and
+unused surface transparent and blend PNG alpha over the desktop, subject to
+native compositor support. Original image pixels are not changed: opaque black
+pixels (including the sender's bottom gap) stay black; this is not black-color
+removal. On Windows, transparent mode also disables the native undecorated
+window shadow and its thin perimeter; disabling the option restores black and
+the opaque window's shadow policy. Native visual verification of shadow removal
+is still required. The choice is session-only and
+resets on restart. There is no click-through, persistent state, background
+service, installer, or automatic sender configuration.
 
 ## Learn and verify
 
@@ -51,7 +60,7 @@ background service, installer, or automatic sender configuration.
 | --- | --- |
 | [Architecture and Rust study path](docs/architecture.md) | Data flow, ownership/Drop, snapshots, thread boundaries, texture reuse, and reading exercises |
 | [Protocol and local trust boundary](docs/protocol.md) | Exact headers, PNG formats, rejections, limits, and local-process security assumptions |
-| [Testing and evidence limits](docs/testing.md) | The 20-test suite, explicit native checks, TCP reset helper, and outstanding manual/sender/platform checks |
+| [Testing and evidence limits](docs/testing.md) | The 24-test suite, explicit native checks, TCP reset helper, and outstanding manual/sender/platform checks |
 
 Quick developer checks:
 
@@ -62,7 +71,8 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite has **21 tests** (14 receiver, 7 headless window). The separate
+The default suite defines **24 tests** (14 receiver, 9 headless window, and
+1 private shadow-policy unit test). The separate
 macOS native startup test is ignored by default. The testing guide documents its
 explicit invocation and the graphical `native_smoke` example.
 
