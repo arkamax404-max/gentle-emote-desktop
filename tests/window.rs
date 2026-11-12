@@ -226,6 +226,90 @@ fn upload_only_on_new_snapshot_and_use_nearest_filter() {
 }
 
 #[test]
+fn image_fits_with_five_source_rows_of_top_padding_and_full_uv() {
+    let (ctx, mut app, address) = setup();
+    step(&ctx, &mut app, vec![]);
+    let mut pixels = [42, 7, 9, 255].repeat(64 * 64);
+    pixels[59 * 64 * 4..].copy_from_slice(&[0, 0, 0, 255].repeat(5 * 64));
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, 64, 64);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&pixels)
+            .unwrap();
+    }
+    let mut socket = TcpStream::connect(address).unwrap();
+    write!(socket, "POST /emote HTTP/1.1\r\nHost: localhost\r\nContent-Type: image/png\r\nX-Emote-Version: 1\r\nContent-Length: {}\r\n\r\n", png.len()).unwrap();
+    socket.write_all(&png).unwrap();
+    let mut response = String::new();
+    socket.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 204"));
+
+    for size in [
+        Vec2::splat(128.0),
+        Vec2::splat(192.0),
+        Vec2::splat(256.0),
+        Vec2::splat(384.0),
+        Vec2::new(256.0, 192.0),
+        Vec2::new(128.0, 256.0),
+    ] {
+        let mut raw = input(vec![]);
+        raw.screen_rect = Some(egui::Rect::from_min_size(Pos2::ZERO, size));
+        let mut surface = egui::Rect::NOTHING;
+        let output = Output(ctx.run_ui(raw, |ui| {
+            surface = ui.max_rect();
+            app.show(ui);
+        }));
+        let meshes: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::Mesh(mesh) => Some(mesh),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(meshes.len(), 1);
+        let mesh = meshes[0];
+        let scale = (surface.width() / 64.0).min(surface.height() / 69.0);
+        let expected = egui::Rect::from_min_size(
+            egui::pos2(
+                surface.center().x - 32.0 * scale,
+                surface.center().y - 69.0 * scale / 2.0 + 5.0 * scale,
+            ),
+            Vec2::splat(64.0 * scale),
+        );
+        assert_eq!(mesh.vertices.len(), 4);
+        for (pos, uv) in [
+            (expected.left_top(), egui::pos2(0.0, 0.0)),
+            (expected.right_top(), egui::pos2(1.0, 0.0)),
+            (expected.left_bottom(), egui::pos2(0.0, 1.0)),
+            (expected.right_bottom(), egui::pos2(1.0, 1.0)),
+        ] {
+            assert!(
+                mesh.vertices.iter().any(|vertex| {
+                    vertex.pos.distance(pos) < 0.001
+                        && vertex.uv == uv
+                        && vertex.color == egui::Color32::WHITE
+                }),
+                "missing image corner {pos:?} with full UV {uv:?}"
+            );
+        }
+        let top_gap = expected.top() - surface.top();
+        let content_bottom = expected.bottom() - 5.0 * scale;
+        assert!((top_gap - (surface.bottom() - content_bottom)).abs() < 0.001);
+        assert!(surface.contains_rect(expected));
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(rect)
+                if rect.rect == surface && rect.fill == egui::Color32::BLACK)
+        }));
+    }
+}
+
+#[test]
 fn burst_coalesces_and_app_drop_cancels_partial_client() {
     let (ctx, mut app, address) = setup();
     step(&ctx, &mut app, vec![]);

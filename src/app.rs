@@ -70,15 +70,26 @@ impl EmoteApp {
             ui.scope_id().with("emote-surface"),
             egui::Sense::click_and_drag(),
         );
-        ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
         if let Some(texture) = &self.texture {
+            ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
+            // Fit a virtual 64 × 69 composition: five black rows above the
+            // complete image balance the sender's five black rows at its foot.
+            let scale = (rect.width() / 64.0).min(rect.height() / 69.0);
+            let image_rect = egui::Rect::from_min_size(
+                egui::pos2(
+                    rect.center().x - 32.0 * scale,
+                    rect.center().y - 69.0 * scale / 2.0 + 5.0 * scale,
+                ),
+                Vec2::splat(64.0 * scale),
+            );
             ui.painter().image(
                 texture.id(),
-                rect,
+                image_rect,
                 egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
         } else {
+            ui.painter().rect_filled(rect, 0.0, ui.visuals().panel_fill);
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,

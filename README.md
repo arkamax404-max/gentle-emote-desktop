@@ -23,9 +23,11 @@ Two distinct composed PNGs reached the production desktop receiver with HTTP 204
 See the [recorded evidence and manual checklist](docs/testing.md) for scope and
 limits; no sender source or global destination was intentionally changed.
 
-A busy port or native window/backend startup failure is reported on stderr with
-a nonzero exit; there is no silent fallback port. Exact OS error codes and text
-are host-specific.
+A busy port or native window/backend startup failure causes a nonzero exit;
+there is no silent fallback port. Errors are reported on stderr where available.
+The Windows executable uses the GUI subsystem, so double-clicking it does not
+open a console window; startup errors are not visible in a companion console.
+Exact OS error codes and text are host-specific.
 
 | Interaction | Result |
 | --- | --- |
@@ -34,10 +36,13 @@ are host-specific.
 | Right-click anywhere | Size menu: 128, 192 (initial), 256, or 384 logical pixels |
 | Right-click → Exit | Close the window and shut down the owned receiver |
 
-Sizes are integer multiples of the 64-pixel image; physical dimensions also
-follow the OS display scale. Nearest-neighbor filtering keeps texel edges sharp.
-PNG alpha is blended inside an **opaque window**, not converted into desktop
-transparency. There is no click-through, theme/settings UI, persistent state,
+Window sizes remain square; physical dimensions also follow the OS display
+scale. The desktop adds black top padding equivalent to five source rows,
+balancing the sender image's existing five-row black bottom gap. The complete
+64×64 image is uniformly fitted within a virtual 64×69 composition, centered in
+the window without cropping or changing the PNG. Nearest-neighbor filtering
+keeps texel edges sharp. PNG alpha is blended over black inside an **opaque
+window**, not converted into desktop transparency. There is no click-through, theme/settings UI, persistent state,
 background service, installer, or automatic sender configuration.
 
 ## Learn and verify
@@ -57,7 +62,7 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite has **20 tests** (14 receiver, 6 headless window). The separate
+The default suite has **21 tests** (14 receiver, 7 headless window). The separate
 macOS native startup test is ignored by default. The testing guide documents its
 explicit invocation and the graphical `native_smoke` example.
 
