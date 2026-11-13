@@ -21,19 +21,20 @@ If Cargo is not on PATH on the development host, substitute
 `/Users/santiagoperez/.cargo/bin/cargo` for `cargo`. These instructions do not
 install tools, modify PATH, or change sender configuration.
 
-The current source defines **24 non-ignored tests: 14 receiver + 9 window +
-1 private shadow-policy unit test**. All 24 passed on the Windows host after the
-shadow change and durable missing-native-window regression were added.
+The current source passed **35 non-ignored tests: 19 receiver, 4 session lifecycle,
+11 window, and 1 private shadow-policy unit test** with `cargo test --offline` on the
+Windows development host for the session-avatar rendering update.
 On macOS, Cargo also lists one ignored native startup test; it is not part of
-those 24. On other platforms,
+those 35. On other platforms,
 that startup test is excluded by a target guard.
 A headless suite needs no running GUI, but still compiles native dependencies;
 Linux builds need suitable graphics/toolchain libraries.
 
 | Test file | What its passing tests establish |
 | --- | --- |
-| [`tests/receiver.rs`](../tests/receiver.rs), 14 | Real TCP/HTTP validation, exact status/body assertions, rejection preserving snapshot and notification count, byte/deadline/connection bounds, PNG normalization, publication ordering, snapshots, bind failures, and owned shutdown; includes three response-reader guards |
-| [`tests/window.rs`](../tests/window.rs), 9 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry, no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
+| [`tests/receiver.rs`](../tests/receiver.rs), 19 | Real TCP/HTTP validation, exact status/body assertions, rejection preserving snapshot and notification count, byte/deadline/connection bounds, PNG normalization, publication ordering, snapshots, bind failures, and owned shutdown; includes three response-reader guards |
+| [`tests/window.rs`](../tests/window.rs), 11 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry, no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
+| [`tests/sessions.rs`](../tests/sessions.rs), 4 | Deterministic registry lease/expiry, reactivation, isolation, retention, ordering, legacy compatibility, caps, and finite replay horizon |
 | [`src/app.rs`](../src/app.rs), 1 | Checkbox-driven opaque → transparent → opaque shadow policy; no native window or compositor is exercised |
 | [`tests/startup.rs`](../tests/startup.rs), 1 ignored on macOS | An explicitly launched production process reports an occupied fixed port and terminates as expected on that host |
 
@@ -93,6 +94,24 @@ cargo test --test receiver
 cargo test --test window
 cargo test --lib app::tests::native_shadow_policy_follows_background_toggle_round_trip -- --exact
 ```
+
+## Session-avatar rendering evidence
+
+The T3 test-first run of `cargo test --offline --test window` exited 101: the
+neighbor test saw one mesh instead of two, the size menu requested 256×256 instead
+of 512×256 for two avatars, and reselecting 192 emitted an unnecessary resize.
+After implementation the same command passed all 11 tests; the full offline suite
+then passed all 35. The new public HTTP/headless-egui tests check stable neighboring
+geometry, five-row padding, per-session texture identity and isolated pixel updates,
+nearest filtering, heartbeat-only upload suppression, handle release after close,
+last-image retention, replacement by a new session, and per-avatar size selection
+from the second tile. Existing single-avatar geometry, alpha/background, native
+shadow policy, menu/drag/exit, coalescing, and shutdown regressions still pass.
+Expiry timing itself remains covered by receiver/registry tests; the GUI consumes
+the same snapshots for expiry and close. These checks do not prove human native
+visual behavior or replace an independent concurrency verifier. The existing
+receiver transport helper can intermittently reject Windows ConnectionAborted
+(OS 10053); that known base failure was not observed in this T3 full-suite run.
 
 ## Understand the test-only TCP reset correction
 
@@ -241,6 +260,12 @@ Use this checklist to gather missing evidence, not as a record of completed work
 - [ ] Send actual sender updates and verify the visible emote changes, pixel-art
   edges stay sharp, and labels already embedded in the PNG are not duplicated.
   Record sender version, supported per-run option used, and observed outcome.
+- [ ] Send two session-aware avatars and confirm neighboring tiles stay in stable
+  order, update independently, and resize together at each per-avatar menu size.
+  Close or let one expire and check the other remains; close the last and check
+  its image remains until a new session replaces it. Verify legacy singleton
+  traffic still renders. Many sessions may exceed monitor width; no overflow
+  handling is promised. These multi-avatar native checks have not been performed.
 - [ ] With another ordinary window overlapping, visually check always-on-top
   behavior. Check primary drag, right-click size choices (128/192/256/384), and
   Exit. Confirm menu selection does not start a drag and exit releases port 8001.

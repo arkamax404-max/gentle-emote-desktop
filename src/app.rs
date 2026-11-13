@@ -3,7 +3,12 @@ use crate::receiver::{Frame, LatestFrame, Receiver};
 use eframe::egui::{
     self, ColorImage, PointerButton, TextureHandle, TextureOptions, Vec2, ViewportCommand,
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
+
+struct AvatarTexture {
+    uploaded: Arc<Frame>,
+    texture: TextureHandle,
+}
 
 pub fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
@@ -23,8 +28,9 @@ pub struct EmoteApp {
     // receiver on this thread, never inside its own repaint callback.
     _receiver: Receiver,
     latest: LatestFrame,
-    uploaded: Option<Arc<Frame>>,
-    texture: Option<TextureHandle>,
+    textures: HashMap<Option<String>, AvatarTexture>,
+    tile_size: f32,
+    applied_size: Vec2,
     transparent_background: bool,
     #[cfg(target_os = "windows")]
     applied_native_shadow: Option<bool>,
@@ -34,8 +40,9 @@ impl EmoteApp {
         Self {
             latest: receiver.latest(),
             _receiver: receiver,
-            uploaded: None,
-            texture: None,
+            textures: HashMap::new(),
+            tile_size: 192.0,
+            applied_size: Vec2::splat(192.0),
             transparent_background: false,
             #[cfg(target_os = "windows")]
             applied_native_shadow: None,
@@ -50,29 +57,43 @@ impl EmoteApp {
     /// Shared by the native app and small embedding examples. No timer or frame
     /// queue is needed: input and the receiver's request_repaint wake eframe.
     pub fn show(&mut self, ui: &mut egui::Ui) {
-        // Option means "nothing received yet"; cloning an Arc keeps a snapshot
-        // alive without copying its pixels or holding the receiver's mutex.
-        if let Some(frame) = self.latest.get() {
-            let changed = self
-                .uploaded
-                .as_ref()
-                .is_none_or(|old| !Arc::ptr_eq(old, &frame));
-            if changed {
-                // PNG pixels are unpremultiplied. egui converts them for blending;
-                // NEAREST prevents interpolating adjacent pixel-art texels.
-                let image = ColorImage::from_rgba_unmultiplied([64, 64], &frame.rgba);
-                if let Some(texture) = &mut self.texture {
-                    texture.set(image, TextureOptions::NEAREST);
-                } else {
-                    self.texture = Some(ui.ctx().load_texture(
-                        "emote",
-                        image,
+        // One atomic ordered snapshot; never hold the registry lock during GPU work.
+        // Inactive final avatars intentionally use the same cache entry and pixels.
+        let snapshots = self.latest.snapshots();
+        self.textures
+            .retain(|key, _| snapshots.iter().any(|snapshot| &snapshot.session_id == key));
+        for snapshot in &snapshots {
+            let cached = self.textures.get_mut(&snapshot.session_id);
+            if let Some(cached) = cached {
+                if !Arc::ptr_eq(&cached.uploaded, &snapshot.frame) {
+                    cached.texture.set(
+                        ColorImage::from_rgba_unmultiplied([64, 64], &snapshot.frame.rgba),
                         TextureOptions::NEAREST,
-                    ));
+                    );
+                    cached.uploaded = snapshot.frame.clone();
                 }
-                self.uploaded = Some(frame);
+            } else {
+                // Keep the legacy name for embedding/smoke consumers. Session names
+                // are stable and distinct from that singleton and from each other.
+                let name = snapshot
+                    .session_id
+                    .as_ref()
+                    .map_or_else(|| "emote".to_owned(), |id| format!("emote-session:{id}"));
+                let texture = ui.ctx().load_texture(
+                    name,
+                    ColorImage::from_rgba_unmultiplied([64, 64], &snapshot.frame.rgba),
+                    TextureOptions::NEAREST,
+                );
+                self.textures.insert(
+                    snapshot.session_id.clone(),
+                    AvatarTexture {
+                        uploaded: snapshot.frame.clone(),
+                        texture,
+                    },
+                );
             }
         }
+        let count = snapshots.len().max(1);
         let rect = ui.max_rect();
         // One full-window hit target lets the image and placeholder share exactly
         // the same controls. Painting text does not steal drag/menu interactions.
@@ -86,9 +107,33 @@ impl EmoteApp {
         if !self.transparent_background {
             ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
         }
-        if let Some(texture) = &self.texture {
-            // Fit a virtual 64 × 69 composition: five padding rows above the
-            // complete image balance the sender's five black rows at its foot.
+        for (index, snapshot) in snapshots.iter().enumerate() {
+            let texture = &self.textures[&snapshot.session_id].texture;
+            // Divide the full surface into neighboring tiles, preserving the single
+            // avatar's fit even while the OS is processing a resize request.
+            let rect = egui::Rect::from_min_size(
+                rect.min + Vec2::new(index as f32 * rect.width() / count as f32, 0.0),
+                Vec2::new(rect.width() / count as f32, rect.height()),
+            );
+            let rect = if count > 1 {
+                let stroke_width = 3.0_f32.min(rect.width().min(rect.height()) * 0.5);
+                let edge = rect.shrink(stroke_width * 0.5);
+                let light = egui::Stroke::new(stroke_width, egui::Color32::from_gray(160));
+                let dark = egui::Stroke::new(stroke_width, egui::Color32::from_gray(64));
+                for (points, stroke) in [
+                    ([edge.left_top(), edge.right_top()], light),
+                    ([edge.left_top(), edge.left_bottom()], light),
+                    ([edge.right_top(), edge.right_bottom()], dark),
+                    ([edge.left_bottom(), edge.right_bottom()], dark),
+                ] {
+                    ui.painter().line_segment(points, stroke);
+                }
+                // Keep narrow tiles valid while the OS applies a wider viewport.
+                rect.shrink(4.0_f32.min(rect.width().min(rect.height()) * 0.25))
+            } else {
+                rect
+            };
+            // Five padding rows balance the sender's five black rows at its foot.
             let scale = (rect.width() / 64.0).min(rect.height() / 69.0);
             let image_rect = egui::Rect::from_min_size(
                 egui::pos2(
@@ -103,7 +148,8 @@ impl EmoteApp {
                 egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
-        } else {
+        }
+        if snapshots.is_empty() {
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -115,10 +161,7 @@ impl EmoteApp {
         response.context_menu(|ui| {
             for size in [128, 192, 256, 384] {
                 if ui.button(format!("{size} × {size}")).clicked() {
-                    // Viewport commands ask the OS to act, unlike changing an
-                    // egui layout size. Logical pixels follow the display scale.
-                    ui.ctx()
-                        .send_viewport_cmd(ViewportCommand::InnerSize(Vec2::splat(size as f32)));
+                    self.tile_size = size as f32;
                     ui.close();
                 }
             }
@@ -136,6 +179,13 @@ impl EmoteApp {
                 ui.close();
             }
         });
+        // Resize only for a changed count/selection, not every repaint or heartbeat.
+        // The waiting surface occupies one tile before any frame arrives.
+        let size = Vec2::new(count as f32 * self.tile_size, self.tile_size);
+        if size != self.applied_size {
+            ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(size));
+            self.applied_size = size;
+        }
         // Secondary dragging belongs to the context menu, never to window motion.
         // The popup owns its pointer presses, so selecting an item cannot move us.
         if response.drag_started_by(PointerButton::Primary) && !response.context_menu_opened() {

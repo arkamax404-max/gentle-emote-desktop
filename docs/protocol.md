@@ -133,7 +133,8 @@ that retained display. Legacy traffic has its own singleton key `None`, always
 active once populated, ordered before session keys. It coexists with session
 avatars; it does not expire. Existing `latest().get()` consumers continue to see
 the last accepted frame (legacy or session-aware), never lifecycle metadata, and
-remain unchanged by close or timeout. No GUI rendering change is included here.
+remain unchanged by close or timeout. The desktop uses `snapshots()` to render
+neighboring avatars with independent textures; see the [architecture guide](architecture.md).
 
 Repaint callbacks run outside the mutex. Accepted frames and visible lifecycle
 changes notify; ordinary heartbeats and ignored requests do not. Snapshot pixel

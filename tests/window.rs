@@ -51,6 +51,314 @@ fn step(ctx: &egui::Context, app: &mut EmoteApp, events: Vec<Event>) -> Output {
     Output(ctx.run_ui(input(events), |ui| app.show(ui)))
 }
 
+fn session_request(address: std::net::SocketAddr, id: &str, seq: u64, kind: &str, shade: u8) {
+    let mut png = Vec::new();
+    if kind == "emote" {
+        let mut encoder = png::Encoder::new(&mut png, 64, 64);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder
+            .write_header()
+            .unwrap()
+            .write_image_data(&[shade, 7, 9, 255].repeat(64 * 64))
+            .unwrap();
+    }
+    let mut socket = TcpStream::connect(address).unwrap();
+    write!(socket, "POST /{kind} HTTP/1.1\r\nHost: localhost\r\nContent-Type: image/png\r\nX-Emote-Version: 1\r\nX-Emote-Session-Id: {id}\r\nX-Emote-Stream-Id: stream-{id}\r\nX-Emote-Sequence: {seq}\r\nContent-Length: {}\r\n\r\n", png.len()).unwrap();
+    socket.write_all(&png).unwrap();
+    let mut response = String::new();
+    socket.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+}
+
+fn wide_step(ctx: &egui::Context, app: &mut EmoteApp, width: f32) -> Output {
+    let mut raw = input(vec![]);
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+        Pos2::ZERO,
+        Vec2::new(width, 192.0),
+    ));
+    Output(ctx.run_ui(raw, |ui| app.show(ui)))
+}
+
+fn avatars(output: &Output) -> Vec<(egui::TextureId, egui::Rect)> {
+    output
+        .shapes
+        .iter()
+        .filter_map(|shape| {
+            if let egui::Shape::Mesh(mesh) = &shape.shape {
+                Some((mesh.texture_id, mesh.calc_bounds()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn multi_avatar_bevels_frame_tiles_and_preserve_single_avatar_fit() {
+    let segments = |output: &Output| {
+        output
+            .shapes
+            .iter()
+            .filter_map(|shape| match &shape.shape {
+                egui::Shape::LineSegment { points, stroke } => Some((*points, *stroke)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    for transparent in [false, true] {
+        let (ctx, mut app, address) = setup();
+        session_request(address, "a", 1, "emote", 42);
+        // Register the hit target before sending the transparency menu's click.
+        step(&ctx, &mut app, vec![]);
+        if transparent {
+            toggle_background(&ctx, &mut app);
+        }
+        let single = step(&ctx, &mut app, vec![]);
+        assert!(segments(&single).is_empty(), "a single avatar has no bevel");
+        let original_bounds = avatars(&single)[0].1;
+        drop(single);
+
+        session_request(address, "b", 1, "emote", 84);
+        let multiple = wide_step(&ctx, &mut app, 384.0);
+        let mut expected = Vec::new();
+        for i in 0..2 {
+            let tile =
+                egui::Rect::from_min_size(Pos2::new(i as f32 * 192.0, 0.0), Vec2::splat(192.0));
+            let edge = tile.shrink(1.5);
+            let light = egui::Stroke::new(3.0, egui::Color32::from_gray(160));
+            let dark = egui::Stroke::new(3.0, egui::Color32::from_gray(64));
+            expected.extend([
+                ([edge.left_top(), edge.right_top()], light),
+                ([edge.left_top(), edge.left_bottom()], light),
+                ([edge.right_top(), edge.right_bottom()], dark),
+                ([edge.left_bottom(), edge.right_bottom()], dark),
+            ]);
+            let image = avatars(&multiple)[i].1;
+            assert!(
+                tile.shrink(4.0).contains_rect(image),
+                "the complete PNG stays inside the frame margin"
+            );
+            assert!((image.width() - 64.0 * (184.0 / 69.0)).abs() < 0.001);
+            assert!((image.top() - (4.0 + 5.0 * (184.0 / 69.0))).abs() < 0.001);
+        }
+        assert_eq!(
+            segments(&multiple),
+            expected,
+            "every tile has four three-point light/dark edges in either background mode"
+        );
+        drop(multiple);
+
+        // A resize can temporarily leave many tiles in a narrow old viewport.
+        for width in [16.0, 4.0] {
+            let narrow = wide_step(&ctx, &mut app, width);
+            let edges = segments(&narrow);
+            assert_eq!(edges.len(), 8);
+            for (i, (_, image)) in avatars(&narrow).iter().enumerate() {
+                let tile = egui::Rect::from_min_size(
+                    Pos2::new(i as f32 * width / 2.0, 0.0),
+                    Vec2::new(width / 2.0, 192.0),
+                );
+                assert!(image.is_positive());
+                assert!(
+                    tile.shrink(4.0_f32.min(tile.width() * 0.25))
+                        .contains_rect(*image)
+                );
+                for (points, stroke) in &edges[i * 4..(i + 1) * 4] {
+                    assert_eq!(stroke.width, 3.0_f32.min(tile.width() * 0.5));
+                    assert!(tile.contains_rect(
+                        egui::Rect::from_two_pos(points[0], points[1]).expand(stroke.width * 0.5)
+                    ));
+                }
+            }
+        }
+
+        session_request(address, "b", 2, "emote/close", 0);
+        let remaining = step(&ctx, &mut app, vec![]);
+        assert!(
+            segments(&remaining).is_empty(),
+            "the bevel disappears with the second avatar"
+        );
+        assert_eq!(
+            avatars(&remaining)[0].1,
+            original_bounds,
+            "single-avatar geometry is restored exactly"
+        );
+    }
+}
+
+#[test]
+fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
+    let (ctx, mut app, address) = setup();
+    step(&ctx, &mut app, vec![]);
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "b", 1, "emote", 84);
+    let first = wide_step(&ctx, &mut app, 384.0);
+    let tiles = avatars(&first);
+    assert_eq!(tiles.len(), 2);
+    assert!(tiles[0].1.right() < tiles[1].1.left());
+    let scale = 184.0 / 69.0;
+    for (i, (_, rect)) in tiles.iter().enumerate() {
+        assert!((rect.center().x - (i as f32 * 192.0 + 96.0)).abs() < 0.001);
+        assert!((rect.top() - (4.0 + 5.0 * scale)).abs() < 0.001);
+        assert!((rect.width() - 64.0 * scale).abs() < 0.001);
+    }
+    assert!(
+        first.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&ViewportCommand::InnerSize(Vec2::new(384.0, 192.0)))
+    );
+    assert_eq!(
+        first
+            .textures_delta
+            .set
+            .values()
+            .flatten()
+            .filter(|delta| delta.image.size() == [64, 64])
+            .count(),
+        2
+    );
+    drop(first);
+
+    session_request(address, "a", 2, "emote", 126);
+    let updated = wide_step(&ctx, &mut app, 384.0);
+    assert_eq!(avatars(&updated), tiles);
+    let changes: Vec<_> = updated
+        .textures_delta
+        .set
+        .iter()
+        .filter(|(_, deltas)| deltas.iter().any(|d| d.image.size() == [64, 64]))
+        .collect();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(*changes[0].0, tiles[0].0);
+    let delta = changes[0].1.last().unwrap();
+    assert_eq!(delta.options, egui::TextureOptions::NEAREST);
+    let egui::ImageData::Color(image) = &delta.image;
+    assert!(
+        image
+            .pixels
+            .iter()
+            .all(|p| *p == egui::Color32::from_rgb(126, 7, 9))
+    );
+    assert!(
+        updated.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .is_empty()
+    );
+    drop(updated);
+
+    session_request(address, "b", 2, "emote/heartbeat", 0);
+    let heartbeat = wide_step(&ctx, &mut app, 384.0);
+    assert_eq!(avatars(&heartbeat), tiles);
+    assert!(heartbeat.textures_delta.set.is_empty());
+    assert!(
+        heartbeat.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .is_empty()
+    );
+    drop(heartbeat);
+
+    session_request(address, "a", 3, "emote/close", 0);
+    let closed = step(&ctx, &mut app, vec![]);
+    assert_eq!(
+        avatars(&closed).iter().map(|a| a.0).collect::<Vec<_>>(),
+        vec![tiles[1].0]
+    );
+    assert!(closed.textures_delta.free.contains(&tiles[0].0));
+    assert!(closed.textures_delta.set.is_empty());
+    assert!(
+        closed.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&ViewportCommand::InnerSize(Vec2::splat(192.0)))
+    );
+    drop(closed);
+
+    session_request(address, "b", 3, "emote/close", 0);
+    let retained = step(&ctx, &mut app, vec![]);
+    assert_eq!(avatars(&retained)[0].0, tiles[1].0);
+    assert!(retained.textures_delta.set.is_empty());
+    assert!(retained.textures_delta.free.is_empty());
+    assert!(
+        retained.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .is_empty()
+    );
+    drop(retained);
+
+    session_request(address, "c", 1, "emote", 168);
+    let replaced = step(&ctx, &mut app, vec![]);
+    assert_eq!(avatars(&replaced).len(), 1);
+    assert_ne!(avatars(&replaced)[0].0, tiles[1].0);
+    assert!(replaced.textures_delta.free.contains(&tiles[1].0));
+    assert!(
+        replaced.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .is_empty()
+    );
+}
+
+#[test]
+fn size_menu_applies_to_each_avatar_and_count_changes_keep_chosen_size() {
+    let (ctx, mut app, address) = setup();
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "b", 1, "emote", 84);
+    wide_step(&ctx, &mut app, 384.0);
+    // Open the existing full-surface menu in the second tile.
+    let p = Pos2::new(300.0, 20.0);
+    let run = |app: &mut EmoteApp, events| {
+        let mut raw = input(events);
+        raw.screen_rect = Some(egui::Rect::from_min_size(
+            Pos2::ZERO,
+            Vec2::new(384.0, 192.0),
+        ));
+        Output(ctx.run_ui(raw, |ui| app.show(ui)))
+    };
+    run(
+        &mut app,
+        vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Secondary, true),
+        ],
+    );
+    run(&mut app, vec![button(p, PointerButton::Secondary, false)]);
+    let menu = run(&mut app, vec![]);
+    let p = menu
+        .shapes
+        .iter()
+        .find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text().starts_with("256") => {
+                Some(t.pos + Vec2::splat(4.0))
+            }
+            _ => None,
+        })
+        .unwrap();
+    drop(menu);
+    run(
+        &mut app,
+        vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Primary, true),
+        ],
+    );
+    let chosen = run(&mut app, vec![button(p, PointerButton::Primary, false)]);
+    assert_eq!(
+        chosen.viewport_output[&egui::ViewportId::ROOT].commands,
+        vec![ViewportCommand::InnerSize(Vec2::new(512.0, 256.0))]
+    );
+    drop(chosen);
+    assert!(
+        run(&mut app, vec![]).viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .is_empty()
+    );
+    session_request(address, "a", 2, "emote/close", 0);
+    let closed = run(&mut app, vec![]);
+    assert_eq!(
+        closed.viewport_output[&egui::ViewportId::ROOT].commands,
+        vec![ViewportCommand::InnerSize(Vec2::splat(256.0))]
+    );
+}
+
 #[test]
 fn fixed_square_frameless_topmost_options() {
     let options = native_options();
@@ -151,7 +459,11 @@ fn menu_actions_resize_square_or_close_without_dragging() {
             vec![button(p, PointerButton::Primary, false)],
         );
         let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
-        assert!(commands.contains(&command), "{label}: {commands:?}");
+        if label == "192" {
+            assert!(commands.is_empty(), "unchanged size: {commands:?}");
+        } else {
+            assert!(commands.contains(&command), "{label}: {commands:?}");
+        }
         assert!(!commands.contains(&ViewportCommand::StartDrag));
     }
 }

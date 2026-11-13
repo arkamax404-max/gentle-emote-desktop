@@ -1,8 +1,9 @@
 # Gentle Emote Desktop
 
 A small local Rust window for the existing Gentle Emote PNG sender. It listens on
-**127.0.0.1:8001**, keeps only the latest valid 64×64 frame, and displays pixel art
-in a frameless, always-on-top square. The simulator can keep port 8000.
+**127.0.0.1:8001**, keeps the latest valid 64×64 frame per session, and displays
+neighboring pixel-art avatars in one frameless, always-on-top window. The simulator
+can keep port 8000.
 
 ## Run
 
@@ -33,15 +34,23 @@ Exact OS error codes and text are host-specific.
 | --- | --- |
 | Start with no sender | Readable waiting message and control hints |
 | Primary-button drag | Ask the OS to move the window |
-| Right-click anywhere | Size menu: 128, 192 (initial), 256, or 384 logical pixels |
+| Right-click anywhere | Per-avatar size: 128, 192 (initial), 256, or 384 logical pixels |
 | Right-click → Transparent background | Toggle desktop transparency; off by default, for this session only |
 | Right-click → Exit | Close the window and shut down the owned receiver |
 
-Window sizes remain square; physical dimensions also follow the OS display
-scale. The desktop adds black top padding equivalent to five source rows,
+Each avatar occupies a square tile; the window is one horizontal row with width
+`avatar count × chosen size` and height `chosen size`. With multiple avatars, each
+tile has a beveled frame up to three logical pixels thick (light top/left, dark
+bottom/right) and an inner margin
+of up to four logical pixels around the complete avatar and labels. A single avatar keeps its original
+borderless layout. Startup waits in one
+192-pixel square. Physical dimensions also follow the OS display scale. Many
+sessions can make the row wider than the monitor; scrolling, wrapping, and other
+overflow policies are outside this change. The desktop adds black top padding
+equivalent to five source rows,
 balancing the sender image's existing five-row black bottom gap. The complete
 64×64 image is uniformly fitted within a virtual 64×69 composition, centered in
-the window without cropping or changing the PNG. Nearest-neighbor filtering
+each tile without cropping or changing the PNG. Nearest-neighbor filtering
 keeps texel edges sharp. The background is **opaque black by default**. Enable
 **Transparent background** in the right-click menu to make the added padding and
 unused surface transparent and blend PNG alpha over the desktop, subject to
@@ -54,13 +63,25 @@ is still required. The choice is session-only and
 resets on restart. There is no click-through, persistent state, background
 service, installer, or automatic sender configuration.
 
+## Session compatibility
+
+Session-aware frames use `X-Emote-Session-Id` plus stream/sequence headers on the
+existing version-1 PNG endpoint. Distinct sessions appear in stable first-seen
+order; updates affect only their own tile. Closing or timing out a session removes
+its tile while others remain. The last removed avatar retains its image until a
+new or reactivated session replaces it. Senders heartbeat every 5 seconds; accepted
+frames/heartbeats renew a 30-second lease. Heartbeats never upload image pixels.
+Legacy frames without a session ID still update one nonexpiring singleton avatar,
+which can coexist with session-aware tiles. See the [protocol](docs/protocol.md)
+for exact headers, limits, finite replay protection, and lifecycle rules.
+
 ## Learn and verify
 
 | Guide | Use it for |
 | --- | --- |
 | [Architecture and Rust study path](docs/architecture.md) | Data flow, ownership/Drop, snapshots, thread boundaries, texture reuse, and reading exercises |
 | [Protocol and local trust boundary](docs/protocol.md) | Exact headers, PNG formats, rejections, limits, and local-process security assumptions |
-| [Testing and evidence limits](docs/testing.md) | The 24-test suite, explicit native checks, TCP reset helper, and outstanding manual/sender/platform checks |
+| [Testing and evidence limits](docs/testing.md) | The headless suite, explicit native checks, TCP reset helper, and outstanding manual/sender/platform checks |
 
 Quick developer checks:
 
@@ -71,9 +92,9 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite defines **24 tests** (14 receiver, 9 headless window, and
-1 private shadow-policy unit test). The separate
-macOS native startup test is ignored by default. The testing guide documents its
+The default suite passed **36 tests** on the Windows development host (19 receiver,
+4 session lifecycle, 12 headless window, and 1 private shadow-policy unit test).
+The separate macOS native startup test is ignored by default. The testing guide documents its
 explicit invocation and the graphical `native_smoke` example.
 
 ## Platform status
