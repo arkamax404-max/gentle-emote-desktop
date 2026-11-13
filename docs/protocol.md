@@ -39,7 +39,8 @@ ports, including port 0 for tests, but only on exactly 127.0.0.1 (IPv4).
 `LatestFrame::get() -> Option<Arc<Frame>>` initially returns `None`; once populated,
 it returns a snapshot that stays valid across replacement and shutdown. `Frame`
 contains public `rgba: Vec<u8>`; dimensions are always 64x64. Treat it as immutable.
-The receiver stores only **one** frame, never a history or a pending-frame queue.
+Legacy requests still replace one latest-frame slot, never an image queue.
+Session-aware requests also retain bounded per-session frames (see below).
 External consumers can retain snapshots, so their memory use is their own concern.
 
 Publication swaps a complete image under a short mutex lock, releases the lock,
@@ -72,9 +73,10 @@ Both Content-Length and HTTP chunked bodies work. Each connection handles one
 request and closes; keepalive/pipelining are not supported. Content-Type is
 case-insensitive but must be exactly `image/png` without parameters. Exactly one
 Content-Type and one X-Emote-Version header are required. Version must be `1`.
-The sender's additional state/frame/set/activity/stream headers are accepted and
-ignored: visual labels are already in the pixels. No metadata or payload is
-logged or persisted.
+Additional state/frame/set/activity/stream metadata is accepted and ignored:
+visual labels are already in the pixels. Session lifecycle headers described below
+are interpreted only when a session ID is present (or on lifecycle endpoints).
+No metadata or payload is logged or persisted.
 
 The PNG must be exactly 64x64. Standard grayscale, RGB, palette, and alpha PNGs
 are normalized to RGBA8; 16-bit samples are reduced to 8 bits. Alpha is preserved,
@@ -83,21 +85,84 @@ chunks/checksums through IEND are required. Trailing bytes after a complete PNG
 are tolerated, but still count toward the body limit. Descriptive text and ICC
 profiles are ignored rather than decompressed. There is no color management.
 
-Successful requests return **204 No Content**, empty body. The most recently
-published valid image wins. Simultaneous clients have no sender-order guarantee;
-publication order on the single worker is authoritative. Old images are not
-replayed and there is no animation queue.
+Successful requests return **204 No Content**, empty body. For legacy requests,
+the most recently published valid image wins, with no sender-order guarantee.
+Session-aware publication additionally enforces stream sequence order. There is
+no animation queue.
+
+### Session avatars and liveness
+
+Add these headers to `/emote` to address an independent avatar:
+
+```http
+X-Emote-Session-Id: stable-session-id
+X-Emote-Stream-Id: sender-stream-id
+X-Emote-Sequence: 0
+```
+
+Each header must occur exactly once. Both IDs contain 1–128 ASCII characters from
+`[A-Za-z0-9._:-]`. Sequence contains decimal digits only and fits an unsigned u64
+(0 through 18446744073709551615). Without a session ID, `/emote` retains its original
+single-slot semantics and ignores stream/sequence metadata.
+
+Send bodyless `POST /emote/heartbeat` or `POST /emote/close` with the same version,
+session, stream and sequence headers. These endpoints do not require Content-Type.
+Send a heartbeat every **5 seconds**, including while the image is unchanged.
+They never create image placeholders. Only a valid decoded frame can introduce a
+session or take over an existing stable ID with a new stream.
+
+| Event | Result |
+| --- | --- |
+| Valid frame | Updates only that session, renews its 30-second lease |
+| Higher-sequence heartbeat for a known, nonclosed current stream | Renews lease; reactivates a timed-out avatar using its retained frame |
+| Unknown heartbeat/close, stale sequence, closed or retired stream | 204, ignored; no lease, sequence, pixel or notification changes |
+| Higher-sequence close for current stream | Closes that stream; it cannot reactivate within the replay horizon |
+| New stream's valid frame for the same session | Takes over its existing ordered slot; retires the old stream |
+| 30 seconds without accepted frame/heartbeat | Deactivates avatar; independent worker timer checks every 100 ms |
+
+Sequence is shared across frame, heartbeat and close for each session's destination
+stream. Publication rechecks sequence and stream state **after** PNG decoding under
+the same mutex as lifecycle changes. Rejected requests never consume sequence.
+Invalid bodies/PNGs still return errors even when their sequence would be stale.
+
+`receiver.latest().snapshots()` returns `Vec<SessionSnapshot>` in stable first-seen
+order. Each snapshot has `session_id: Option<String>`, `frame: Arc<Frame>` and
+`active: bool`. Active sessions appear together. If none remain, the final removed
+avatar stays visible with `active == false`; a reactivated or new session replaces
+that retained display. Legacy traffic has its own singleton key `None`, always
+active once populated, ordered before session keys. It coexists with session
+avatars; it does not expire. Existing `latest().get()` consumers continue to see
+the last accepted frame (legacy or session-aware), never lifecycle metadata, and
+remain unchanged by close or timeout. No GUI rendering change is included here.
+
+Repaint callbacks run outside the mutex. Accepted frames and visible lifecycle
+changes notify; ordinary heartbeats and ignored requests do not. Snapshot pixel
+Arcs remain valid after replacement or shutdown.
+
+#### Bounded replay protection
+
+At most **32 session-aware avatars** may be active. A request that would activate
+a 33rd returns 429 without mutation. At most **64 known session records**, each
+with one last frame, are retained. When full, admitting a new session evicts the
+least recently communicating inactive record (ties use first-seen order); active
+records are never evicted. Each record remembers the **16 most recently retired
+stream IDs**, plus its current stream and sequence/closed state. Replacement of
+an evicted identity or a stream older than that finite window can be accepted
+again. There is no permanent ID ban or durable replay protection across restart.
+Senders should use fresh stream IDs on restart. Inactive image retention is bounded
+by the same 64-record cap, not an unbounded session history.
 
 ### Rejections
 
 Application responses have `Connection: close` and
 `Content-Type: text/plain; charset=utf-8`. Error bodies below end in one newline.
-Policy precedence is Origin, path, method, media type, version, length, body, PNG.
+Policy precedence remains Origin, path, method, media type (frames only), version,
+length, then required session headers, body, PNG/empty-body validation, publication.
 
 | Condition | Status | Exact body (before newline) |
 | --- | --- | --- |
 | Any Origin header, including `null` or local origins | 403 | `Origin is not allowed` |
-| Not exactly `/emote`, including a query string | 404 | `not found` |
+| Not exactly `/emote`, `/emote/heartbeat`, or `/emote/close`, including query strings | 404 | `not found` |
 | Method other than POST | 405 | `method not allowed` |
 | Missing, duplicate, or wrong Content-Type | 415 | `expected image/png` |
 | Missing, duplicate, or unsupported version | 400 | `expected X-Emote-Version: 1` |
@@ -105,6 +170,9 @@ Policy precedence is Origin, path, method, media type, version, length, body, PN
 | Body cannot finish within the deadline | 408 | `body timed out` |
 | Malformed HTTP body framing surfaced to the handler | 400 | `malformed body` |
 | Empty, invalid, truncated, animated, wrong-size, or decode-limit PNG | 422 | `expected a 64x64 PNG` |
+| Missing, duplicate, or invalid required session/stream/sequence headers | 400 | `invalid session headers` |
+| Nonempty heartbeat/close body | 400 | `expected empty body` |
+| Activation exceeds the active-session cap | 429 | `session limit reached` |
 
 Hyper itself rejects malformed HTTP syntax/headers (normally 400 with empty body)
 and oversized headers. Incomplete headers are closed at the header deadline.
@@ -127,7 +195,10 @@ HTTP acknowledgement is not an exactly-once delivery guarantee.
 | Complete headers | 1 second | Bounds slow header writers |
 | Complete body | 1 second from handler body-read start | Absolute deadline, not renewed for each chunk |
 | Entire connection | 3 seconds from accept | Also bounds slow response readers |
-| Stored frames | 1 | Last valid image wins |
+| Stored session frames | At most 64 | One per bounded known-session record |
+| Other frame references | Latest, legacy, and retained final display | At most three additional frame allocations, often sharing session pixels |
+| Active sessions | 32, plus optional legacy singleton | Bounded avatar set |
+| Retired streams | 16 per known session | Finite replay horizon |
 
 The PNG library's allocation budget is documented upstream as best-effort, not a
 process-wide allocator cap. The independent encoded-byte, early-dimension,

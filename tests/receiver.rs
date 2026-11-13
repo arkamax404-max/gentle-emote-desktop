@@ -241,6 +241,347 @@ fn request(address: SocketAddr, method: &str, path: &str, headers: &str, body: &
 
 const HEADERS: &str = "Content-Type: image/png\r\nX-Emote-Version: 1\r\n";
 
+fn session_headers(session: &str, stream: &str, sequence: &str) -> String {
+    format!(
+        "{HEADERS}X-Emote-Session-Id: {session}\r\nX-Emote-Stream-Id: {stream}\r\nX-Emote-Sequence: {sequence}\r\n"
+    )
+}
+
+#[test]
+fn session_http_order_close_takeover_and_legacy_compatibility() {
+    let (receiver, count) = start();
+    let address = receiver.local_addr();
+    let send = |path: &str, stream: &str, sequence: &str, body: &[u8]| {
+        request(
+            address,
+            "POST",
+            path,
+            &session_headers("session", stream, sequence),
+            body,
+        )
+    };
+    assert_response(&send("/emote/heartbeat", "a", "0", &[]), 204, "");
+    assert!(receiver.latest().get().is_none());
+    assert_eq!(count.load(Ordering::SeqCst), 0);
+    assert_response(&send("/emote", "a", "1", &png(64, 64, 1)), 204, "");
+    let saved = receiver.latest().get().unwrap();
+    assert_response(&send("/emote/heartbeat", "a", "3", &[]), 204, "");
+    assert_response(&send("/emote", "a", "2", &png(64, 64, 2)), 204, "");
+    assert!(Arc::ptr_eq(&saved, &receiver.latest().get().unwrap()));
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_response(&send("/emote/close", "a", "4", &[]), 204, "");
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+    assert_response(&send("/emote", "a", "5", &png(64, 64, 5)), 204, "");
+    assert!(Arc::ptr_eq(&saved, &receiver.latest().get().unwrap()));
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+    assert_response(&send("/emote", "b", "0", &png(64, 64, 6)), 204, "");
+    assert_response(&send("/emote", "a", "99", &png(64, 64, 7)), 204, "");
+    assert_eq!(receiver.latest().get().unwrap().rgba[0], 6);
+    assert_eq!(count.load(Ordering::SeqCst), 3);
+    assert_response(
+        &request(address, "POST", "/emote", HEADERS, &png(64, 64, 8)),
+        204,
+        "",
+    );
+    assert_eq!(receiver.latest().get().unwrap().rgba[0], 8);
+    assert_eq!(count.load(Ordering::SeqCst), 4);
+}
+
+#[test]
+fn session_http_invalid_input_never_changes_image_or_notifications() {
+    let (receiver, count) = start();
+    let address = receiver.local_addr();
+    let valid = session_headers("ok", "stream", "0");
+    assert_response(
+        &request(address, "POST", "/emote", &valid, &png(64, 64, 9)),
+        204,
+        "",
+    );
+    let saved = receiver.latest().get().unwrap();
+    let mut cases = Vec::new();
+    for id in ["", "has space", "bad/id", "é", &"a".repeat(129)] {
+        cases.push((
+            "/emote",
+            session_headers(id, "stream", "1"),
+            png(64, 64, 1),
+            "invalid session headers\n",
+        ));
+        cases.push((
+            "/emote",
+            session_headers("ok", id, "1"),
+            png(64, 64, 1),
+            "invalid session headers\n",
+        ));
+    }
+    for sequence in ["", "-1", "+1", "1.0", "18446744073709551616"] {
+        cases.push((
+            "/emote",
+            session_headers("ok", "stream", sequence),
+            png(64, 64, 1),
+            "invalid session headers\n",
+        ));
+    }
+    for name in [
+        "X-Emote-Session-Id",
+        "X-Emote-Stream-Id",
+        "X-Emote-Sequence",
+    ] {
+        cases.push((
+            "/emote",
+            format!("{valid}{name}: x\r\n"),
+            png(64, 64, 1),
+            "invalid session headers\n",
+        ));
+    }
+    for missing in ["X-Emote-Stream-Id: stream\r\n", "X-Emote-Sequence: 0\r\n"] {
+        cases.push((
+            "/emote",
+            valid.replace(missing, ""),
+            png(64, 64, 1),
+            "invalid session headers\n",
+        ));
+    }
+    cases.push((
+        "/emote/heartbeat",
+        HEADERS.into(),
+        vec![],
+        "invalid session headers\n",
+    ));
+    cases.push((
+        "/emote/close",
+        valid.clone(),
+        vec![1],
+        "expected empty body\n",
+    ));
+    for (path, headers, body, message) in cases {
+        assert_response(
+            &request(address, "POST", path, &headers, &body),
+            400,
+            message,
+        );
+        assert!(Arc::ptr_eq(&saved, &receiver.latest().get().unwrap()));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+    // Invalid PNGs must not consume the sequence that a later valid frame uses.
+    let headers = session_headers("ok", "stream", "18446744073709551615");
+    assert_response(
+        &request(address, "POST", "/emote", &headers, b"bad"),
+        422,
+        "expected a 64x64 PNG\n",
+    );
+    assert!(Arc::ptr_eq(&saved, &receiver.latest().get().unwrap()));
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_response(
+        &request(address, "POST", "/emote", &headers, &png(64, 64, 10)),
+        204,
+        "",
+    );
+    assert_eq!(receiver.latest().get().unwrap().rgba[0], 10);
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn session_http_multiple_sessions_and_delayed_publication() {
+    let (receiver, count) = start();
+    let addr = receiver.local_addr();
+    for (id, value) in [("b", 1), ("a", 2)] {
+        assert_response(
+            &request(
+                addr,
+                "POST",
+                "/emote",
+                &session_headers(id, "old", "1"),
+                &png(64, 64, value),
+            ),
+            204,
+            "",
+        );
+    }
+    let latest = receiver.latest();
+    let b = latest.snapshots()[0].frame.clone();
+    assert_eq!(
+        latest
+            .snapshots()
+            .iter()
+            .map(|s| s.session_id.clone().unwrap())
+            .collect::<Vec<_>>(),
+        ["b", "a"]
+    );
+    // Hold an older frame body open while newer lifecycle requests are accepted.
+    for (path, stream, sequence, body) in [
+        ("/emote/heartbeat", "old", "3", vec![]),
+        ("/emote/close", "old", "4", vec![]),
+        ("/emote", "new", "0", png(64, 64, 7)),
+    ] {
+        let bytes = png(64, 64, 99);
+        let mut slow = connect(addr);
+        write!(
+            slow,
+            "POST /emote HTTP/1.1\r\nHost: localhost\r\n{}Content-Length: {}\r\n\r\n",
+            session_headers("a", "old", "2"),
+            bytes.len()
+        )
+        .unwrap();
+        slow.write_all(&bytes[..1]).unwrap();
+        assert_response(
+            &request(
+                addr,
+                "POST",
+                path,
+                &session_headers("a", stream, sequence),
+                &body,
+            ),
+            204,
+            "",
+        );
+        let before = count.load(Ordering::SeqCst);
+        let saved = latest.get().unwrap();
+        slow.write_all(&bytes[1..]).unwrap();
+        assert_response(&response(slow), 204, "");
+        assert_eq!(count.load(Ordering::SeqCst), before);
+        assert!(Arc::ptr_eq(&saved, &latest.get().unwrap()));
+        assert!(Arc::ptr_eq(&b, &latest.snapshots()[0].frame));
+    }
+    assert_eq!(latest.snapshots().len(), 2);
+    assert_eq!(latest.snapshots()[1].frame.rgba[0], 7);
+    assert_eq!(count.load(Ordering::SeqCst), 4);
+    // Bodyless lifecycle traffic does not require image media type.
+    let headers = session_headers("a", "new", "1").replace("Content-Type: image/png\r\n", "");
+    assert_response(
+        &request(addr, "POST", "/emote/close", &headers, &[]),
+        204,
+        "",
+    );
+    assert_eq!(latest.snapshots().len(), 1);
+    assert_eq!(latest.snapshots()[0].session_id.as_deref(), Some("b"));
+    assert_response(
+        &request(
+            addr,
+            "POST",
+            "/emote/close",
+            &session_headers("b", "old", "2"),
+            &[],
+        ),
+        204,
+        "",
+    );
+    assert_eq!(latest.snapshots().len(), 1);
+    assert!(!latest.snapshots()[0].active);
+    assert_eq!(latest.snapshots()[0].session_id.as_deref(), Some("b"));
+}
+
+#[test]
+fn session_http_active_cap_and_identifier_boundaries() {
+    use gentle_emote_desktop::sessions::MAX_ACTIVE_SESSIONS;
+    let (receiver, count) = start();
+    let addr = receiver.local_addr();
+    let id = "a".repeat(128);
+    let stream = format!("{}._:-", "Z".repeat(124));
+    assert_response(
+        &request(
+            addr,
+            "POST",
+            "/emote",
+            &session_headers(&id, &stream, "0"),
+            &png(64, 64, 1),
+        ),
+        204,
+        "",
+    );
+    for n in 1..MAX_ACTIVE_SESSIONS {
+        assert_response(
+            &request(
+                addr,
+                "POST",
+                "/emote",
+                &session_headers(&n.to_string(), "s", "0"),
+                &png(64, 64, 2),
+            ),
+            204,
+            "",
+        );
+    }
+    let saved = receiver.latest().get().unwrap();
+    assert_response(
+        &request(
+            addr,
+            "POST",
+            "/emote",
+            &session_headers("overflow", "s", "0"),
+            &png(64, 64, 3),
+        ),
+        429,
+        "session limit reached\n",
+    );
+    assert_eq!(receiver.latest().snapshots().len(), MAX_ACTIVE_SESSIONS);
+    assert!(Arc::ptr_eq(&saved, &receiver.latest().get().unwrap()));
+    assert_eq!(count.load(Ordering::SeqCst), MAX_ACTIVE_SESSIONS);
+    assert_response(
+        &request(
+            addr,
+            "POST",
+            "/emote/close",
+            &session_headers(&id, &stream, "1"),
+            &[],
+        ),
+        204,
+        "",
+    );
+    // The rejected activation must not have consumed sequence zero.
+    assert_response(
+        &request(
+            addr,
+            "POST",
+            "/emote",
+            &session_headers("overflow", "s", "0"),
+            &png(64, 64, 4),
+        ),
+        204,
+        "",
+    );
+    assert_eq!(receiver.latest().snapshots().len(), MAX_ACTIVE_SESSIONS);
+    assert_eq!(receiver.latest().get().unwrap().rgba[0], 4);
+    assert_eq!(count.load(Ordering::SeqCst), MAX_ACTIVE_SESSIONS + 2);
+}
+
+#[test]
+fn session_http_repaint_can_read_snapshots_after_publication() {
+    use gentle_emote_desktop::receiver::LatestFrame;
+    use std::sync::{OnceLock, mpsc};
+    let handle = Arc::new(OnceLock::<LatestFrame>::new());
+    let callback_handle = handle.clone();
+    let (tx, rx) = mpsc::channel();
+    let receiver = Receiver::bind("127.0.0.1:0".parse().unwrap(), move || {
+        let latest = callback_handle.get().unwrap();
+        tx.send((latest.get().unwrap().rgba[0], latest.snapshots()[0].active))
+            .unwrap();
+    })
+    .unwrap();
+    assert!(handle.set(receiver.latest()).is_ok());
+    for (path, sequence, body, active) in [
+        ("/emote", "0", png(64, 64, 8), true),
+        ("/emote/close", "1", vec![], false),
+    ] {
+        assert_response(
+            &request(
+                receiver.local_addr(),
+                "POST",
+                path,
+                &session_headers("session", "s", sequence),
+                &body,
+            ),
+            204,
+            "",
+        );
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            (8, active)
+        );
+    }
+    receiver.shutdown();
+    assert_eq!(handle.get().unwrap().snapshots()[0].frame.rgba[0], 8);
+}
+
 fn assert_response(response: &str, code: u16, body: &str) {
     assert!(
         response.starts_with(&format!("HTTP/1.1 {code} ")),

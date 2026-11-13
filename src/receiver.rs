@@ -1,7 +1,8 @@
-//! A single owned network thread publishes complete images to a single GUI slot.
+//! One owned network thread publishes complete images and bounded session snapshots.
 //!
 //! HTTP parsing belongs to Hyper, not this module. The small policy layer below
 //! validates the request before decoding, then publishes only a fully valid PNG.
+use crate::sessions::{Event, SessionRegistry, SessionSnapshot};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{
@@ -14,7 +15,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{net::TcpListener, sync::oneshot, task::JoinSet, time::timeout};
 
@@ -36,14 +37,16 @@ pub struct Frame {
 /// Cloning this handle does not clone the pixels. `get` takes only a short lock.
 /// There is no pending-frame queue: an unread frame is simply replaced.
 #[derive(Clone, Default)]
-pub struct LatestFrame(Arc<Mutex<Option<Arc<Frame>>>>);
+pub struct LatestFrame(Arc<Mutex<SessionRegistry>>);
 impl LatestFrame {
     pub fn get(&self) -> Option<Arc<Frame>> {
-        self.0.lock().expect("frame lock poisoned").clone()
+        self.0.lock().expect("frame lock poisoned").latest()
     }
 
-    fn publish(&self, frame: Frame) {
-        *self.0.lock().expect("frame lock poisoned") = Some(Arc::new(frame));
+    /// Active avatars in stable first-seen order, or the retained final avatar.
+    /// Pixel Arcs remain valid across publication, expiry, and shutdown.
+    pub fn snapshots(&self) -> Vec<SessionSnapshot> {
+        self.0.lock().expect("frame lock poisoned").snapshots()
     }
 }
 
@@ -131,10 +134,16 @@ async fn serve(
     repaint: Arc<dyn Fn() + Send + Sync>,
 ) {
     let mut connections = JoinSet::new();
+    let mut ticks = tokio::time::interval(Duration::from_millis(100));
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             biased;
             _ = &mut stopped => break,
+            _ = ticks.tick() => {
+                let changed = latest.0.lock().expect("frame lock poisoned").expire(Instant::now());
+                if changed { repaint(); }
+            },
             Some(_) = connections.join_next(), if !connections.is_empty() => {},
             accepted = listener.accept() => {
                 let Ok((socket, _)) = accepted else { break };
@@ -184,16 +193,23 @@ async fn handle(
     // Reject *all* Origin-bearing requests, including null/same-origin values.
     // This is a local native protocol, never a CORS-enabled browser endpoint.
     let headers = request.headers();
+    let path = request
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or("");
+    let lifecycle = matches!(path, "/emote/heartbeat" | "/emote/close");
     let failure = if headers.contains_key("origin") {
         Some((S::FORBIDDEN, "Origin is not allowed\n"))
-    } else if request.uri().path_and_query().map(|p| p.as_str()) != Some("/emote") {
+    } else if path != "/emote" && !lifecycle {
         Some((S::NOT_FOUND, "not found\n"))
     } else if request.method() != hyper::Method::POST {
         Some((S::METHOD_NOT_ALLOWED, "method not allowed\n"))
-    } else if headers.get_all("content-type").iter().count() != 1
-        || !headers
-            .get("content-type")
-            .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"image/png"))
+    } else if !lifecycle
+        && (headers.get_all("content-type").iter().count() != 1
+            || !headers
+                .get("content-type")
+                .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"image/png")))
     {
         Some((S::UNSUPPORTED_MEDIA_TYPE, "expected image/png\n"))
     } else if headers.get_all("x-emote-version").iter().count() != 1
@@ -214,6 +230,15 @@ async fn handle(
         return Ok(reply(code, text));
     }
 
+    let identity = if lifecycle || headers.contains_key("x-emote-session-id") {
+        let Some(identity) = session_headers(headers) else {
+            return Ok(reply(S::BAD_REQUEST, "invalid session headers\n"));
+        };
+        Some(identity)
+    } else {
+        None
+    };
+    let close = path == "/emote/close";
     let read = async {
         let mut body = request.into_body();
         let mut bytes = Vec::new();
@@ -233,12 +258,67 @@ async fn handle(
         Ok(Err((code, text))) => return Ok(reply(code, text)),
         Ok(Ok(bytes)) => bytes,
     };
-    let Some(frame) = decode(&bytes) else {
-        return Ok(reply(S::UNPROCESSABLE_ENTITY, "expected a 64x64 PNG\n"));
+    let event = if lifecycle {
+        if !bytes.is_empty() {
+            return Ok(reply(S::BAD_REQUEST, "expected empty body\n"));
+        }
+        if close {
+            Event::Close
+        } else {
+            Event::Heartbeat
+        }
+    } else {
+        let Some(frame) = decode(&bytes) else {
+            return Ok(reply(S::UNPROCESSABLE_ENTITY, "expected a 64x64 PNG\n"));
+        };
+        Event::Frame(Arc::new(frame))
     };
-    latest.publish(frame);
-    repaint();
+    // Decode and await bodies without holding the publication mutex. Sequence,
+    // closed-stream and capacity checks happen atomically here, after decoding.
+    let changed = {
+        let mut registry = latest.0.lock().expect("frame lock poisoned");
+        if let Some((session, stream, sequence)) = identity {
+            registry.apply(&session, &stream, sequence, event, Instant::now())
+        } else {
+            let Event::Frame(frame) = event else {
+                unreachable!()
+            };
+            registry.publish_legacy(frame);
+            Ok(true)
+        }
+    };
+    match changed {
+        Err(_) => return Ok(reply(S::TOO_MANY_REQUESTS, "session limit reached\n")),
+        Ok(true) => repaint(),
+        Ok(false) => {}
+    }
     Ok(reply(S::NO_CONTENT, ""))
+}
+
+fn session_headers(headers: &hyper::HeaderMap) -> Option<(String, String, u64)> {
+    let one = |name| {
+        (headers.get_all(name).iter().count() == 1)
+            .then(|| headers.get(name)?.to_str().ok())
+            .flatten()
+    };
+    let id = one("x-emote-session-id")?;
+    let stream = one("x-emote-stream-id")?;
+    let valid_id = |value: &str| {
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
+    };
+    let sequence = one("x-emote-sequence")?;
+    if !valid_id(id)
+        || !valid_id(stream)
+        || sequence.is_empty()
+        || !sequence.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    Some((id.into(), stream.into(), sequence.parse().ok()?))
 }
 
 fn decode(bytes: &[u8]) -> Option<Frame> {
