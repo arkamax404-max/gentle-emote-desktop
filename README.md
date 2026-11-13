@@ -34,15 +34,26 @@ Exact OS error codes and text are host-specific.
 | --- | --- |
 | Start with no sender | Readable waiting message and control hints |
 | Primary-button drag | Ask the OS to move the window |
-| Right-click anywhere | Per-avatar size: 128, 192 (initial), 256, or 384 logical pixels |
+| Right-click anywhere | Open a separate options window: per-avatar size 128, 192 (initial), 256, or 384 logical pixels |
 | Right-click → Transparent background | Toggle desktop transparency; off by default, for this session only |
 | Right-click → Exit | Close the window and shut down the owned receiver |
 
+The options use an independent, opaque native window, so all controls remain
+accessible even with a 128-pixel avatar; they are not clipped to the avatar's
+surface. Selecting an option, pressing Escape, closing the options window, or
+moving focus away after it has gained focus dismisses it. Exit closes the main
+avatar window and its receiver, not just the options. Native popup positioning
+and focus behavior depend on the window manager/compositor.
+
 Each avatar occupies a square tile; the window is one horizontal row with width
-`avatar count × chosen size` and height `chosen size`. With multiple avatars, each
-tile has a beveled frame up to three logical pixels thick (light top/left, dark
-bottom/right) and an inner margin
-of up to four logical pixels around the complete avatar and labels. A single avatar keeps its original
+`avatar count × chosen size` and height `chosen size`. With multiple avatars and
+an opaque background, each tile uses the supplied [cyberpunk PNG frame](assets/README.md)
+instead of a beveled border. The complete avatar and labels fit within its clear
+opening; one embedded texture is reused across tiles with nearest-neighbor sampling.
+At 128 points the avatar image is approximately 92 points wide, so the artwork
+has more space than the old thin border. Transparent mode draws no frame and
+keeps its previous inner margin of up to four logical pixels and image fit.
+A single avatar keeps its original
 borderless layout. Startup waits in one
 192-pixel square. Physical dimensions also follow the OS display scale. Many
 sessions can make the row wider than the monitor; scrolling, wrapping, and other
@@ -92,8 +103,13 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite passed **36 tests** on the Windows development host (19 receiver,
-4 session lifecycle, 12 headless window, and 1 private shadow-policy unit test).
+The default suite contains **39 tests** (19 receiver, 4 session lifecycle,
+15 headless window, and 1 private shadow-policy unit test). The earlier popup
+update passed its 14 window tests, the shadow policy, and all 4 lifecycle tests.
+The frame update adds alpha/artwork checks and replaces the bevel geometry
+checks with frame-opening, texture reuse, and transparent/single-avatar checks. The
+full-suite attempt failed one receiver check with Windows `ConnectionAborted`
+(OS 10053); it was not rerun. See the testing guide for the recorded limits.
 The separate macOS native startup test is ignored by default. The testing guide documents its
 explicit invocation and the graphical `native_smoke` example.
 

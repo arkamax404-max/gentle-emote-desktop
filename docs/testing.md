@@ -21,11 +21,13 @@ If Cargo is not on PATH on the development host, substitute
 `/Users/santiagoperez/.cargo/bin/cargo` for `cargo`. These instructions do not
 install tools, modify PATH, or change sender configuration.
 
-The current source passed **35 non-ignored tests: 19 receiver, 4 session lifecycle,
-11 window, and 1 private shadow-policy unit test** with `cargo test --offline` on the
-Windows development host for the session-avatar rendering update.
+The current suite contains **39 non-ignored tests: 19 receiver, 4 session lifecycle,
+15 window, and 1 private shadow-policy unit test**. The frame/compact-popup checks
+passed all 15 window tests and the shadow policy; the earlier lifecycle check
+passed 4/4. The most recent full-suite attempt failed one receiver test with
+Windows OS 10053; it was not rerun for this UI update. See the evidence below.
 On macOS, Cargo also lists one ignored native startup test; it is not part of
-those 35. On other platforms,
+those 39. On other platforms,
 that startup test is excluded by a target guard.
 A headless suite needs no running GUI, but still compiles native dependencies;
 Linux builds need suitable graphics/toolchain libraries.
@@ -33,7 +35,7 @@ Linux builds need suitable graphics/toolchain libraries.
 | Test file | What its passing tests establish |
 | --- | --- |
 | [`tests/receiver.rs`](../tests/receiver.rs), 19 | Real TCP/HTTP validation, exact status/body assertions, rejection preserving snapshot and notification count, byte/deadline/connection bounds, PNG normalization, publication ordering, snapshots, bind failures, and owned shutdown; includes three response-reader guards |
-| [`tests/window.rs`](../tests/window.rs), 11 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry, no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
+| [`tests/window.rs`](../tests/window.rs), 15 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry, no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
 | [`tests/sessions.rs`](../tests/sessions.rs), 4 | Deterministic registry lease/expiry, reactivation, isolation, retention, ordering, legacy compatibility, caps, and finite replay horizon |
 | [`src/app.rs`](../src/app.rs), 1 | Checkbox-driven opaque → transparent → opaque shadow policy; no native window or compositor is exercised |
 | [`tests/startup.rs`](../tests/startup.rs), 1 ignored on macOS | An explicitly launched production process reports an occupied fixed port and terminates as expected on that host |
@@ -94,6 +96,80 @@ cargo test --test receiver
 cargo test --test window
 cargo test --lib app::tests::native_shadow_policy_follows_background_toggle_round_trip -- --exact
 ```
+
+## Independent options window and transparent frames
+
+The reported 126 × 126 surface cannot contain the embedded menu. Options now
+use a native immediate child viewport with its own content-sized surface and
+eight logical pixels of outer padding. Tests drive egui's actual synchronous viewport-renderer hook on the
+same Context, not copied application state. They check complete control-label
+bounds at root sizes 126 and 128, a distinct child ID with ROOT parent, no root
+resize just for opening, per-avatar sizing, unchanged-size suppression, and
+Exit explicitly targeting ROOT. Escape, native child close and focus gain/loss
+dismiss only the popup; initial lack of focus does not self-dismiss it. Reopening
+uses the same viewport. Existing dragging, textures, background and image-fit
+regressions remain covered. Before the PNG replacement below, bevels became
+opaque-only; transparent geometry stayed unchanged, and returning to opaque
+restored all eight edges for two tiles. The frame update now replaces those
+edge assertions with artwork/clear-opening checks.
+
+Initial test compilation failed on two incorrect egui API assumptions (parent
+is not optional; ViewportClass has no Debug). After fixing the fixture, actual
+RED failed both requested rules: missing independent viewport and visible
+transparent-mode bevels. First GREEN passed 13/14 window checks; the remaining
+fixture expected exported ViewportOutput.class to be Immediate. Public egui
+0.37 source leaves that metadata at its default even on the immediate path.
+The corrected assertion observes the native immediate-renderer hook, child ID,
+parent, separate surface, no deferred callback, and actual child control bounds;
+no dependency or captured output was patched. All 14 window tests then passed.
+
+The single full-suite attempt passed the shadow-policy test but failed
+`session_http_invalid_input_never_changes_image_or_notifications` at
+`tests/receiver.rs:48`: Windows ConnectionAborted (OS 10053), 18/19 receiver tests
+passed. This error has historical baseline precedents, but this attempt did not
+reproduce a baseline or establish a fresh cause. Receiver source/tests are
+unchanged. The suite stopped before later integration targets and was not
+retried to obtain a green result. The previously unexecuted lifecycle target
+subsequently passed 4/4; fmt, all-target Clippy with warnings denied, and offline
+build each passed. macOS startup is not applicable on this Windows host.
+
+Headless outputs establish dispatch, layout and settings behavior, not real OS
+focus, DPI, screen-edge placement or compositor visuals. Manual native popup
+and transparent-border inspection remain pending. No current full-suite green,
+remote CI, native review approval or publication is claimed for this update.
+
+## User-supplied PNG frame and compact popup
+
+The user's RGB source image contains a baked checkerboard, not alpha. Preparation
+preserved its SHA-256 and generated a cropped 1100 × 1092 RGBA derivative with a
+clear 851-point-source square; see [the exact recipe and provenance](../assets/README.md).
+Pixel checks assert the clear opening and exterior alpha, plus retained green
+and cyan opaque artwork. The renderer uploads one shared nearest-neighbor frame
+texture only for opaque multiple avatars. Tests independently inspect public
+texture metadata to distinguish frame and avatar meshes, and check every frame
+pixel under each complete avatar rectangle remains transparent at tile sizes
+128, 192, 256 and 384. They also check proportional frame fitting, useful image
+size at 128, unchanged transparent geometry, toggle restoration, texture reuse,
+narrow widths 16/4, and exact single-avatar restoration after removal.
+
+Actual RED expected two PNG frame meshes and received zero from the old bevel.
+After integration all 15 window tests and the shadow policy passed. Initial
+Clippy rejected two new test-only constant `chunks_exact` calls; the fixture
+uses `as_chunks::<4>()` instead, without suppressing warnings. Final verification
+passed the 15 window tests, shadow-policy test, format check, all-target Clippy
+with warnings denied, and offline build. The compact menu
+feedback also has actual RED for excess horizontal whitespace, then a passing
+right/bottom padding check with dimensions measured from the controls. The
+previous oversized popup was visually confirmed by the user. The user then
+accepted the new compact popup and PNG frames with a screenshot showing two
+avatars: "ha quedado bastante bien, lo subimos y lo dejamos aqui por el momento".
+This is native visual acceptance of the displayed result, not independent
+measurement of logical size/DPI or a claim that every compositor/focus behavior
+was exercised. Transparent-mode omission remains covered by the automated tests.
+
+The earlier full-suite OS 10053 receiver failure remains recorded, not retried
+or declared green. No receiver, protocol, dependency, source PNG or sender
+behavior changed. No new review approval, commit or publication is asserted.
 
 ## Session-avatar rendering evidence
 

@@ -73,7 +73,7 @@ handle or snapshot remains readable after the listener has stopped.
 | Runs eframe and `EmoteApp::show` | Runs one current-thread Tokio runtime |
 | Reads a short-lived snapshot | Accepts bounded concurrent connection tasks |
 | Owns and updates per-key GPU textures | Parses HTTP, validates policy, decodes PNG |
-| Paints image, placeholder, and context menu | Publishes complete immutable snapshots |
+| Paints image/placeholder and a separate immediate options viewport | Publishes complete immutable snapshots |
 | Sends resize, close, and drag viewport commands | Calls the repaint notification after publication |
 | Drops the app and joins the receiver | Cancels connection tasks when stopped |
 
@@ -156,6 +156,16 @@ initial square with Glow rendering. It widens into a horizontal row of square
 avatar tiles. The size menu chooses each tile's side length, so native size is
 `count × tile size` by `tile size` (one tile while waiting). Resize commands are
 sent only when count or chosen size changes, not on image updates or heartbeats.
+The options use `show_viewport_immediate` with a stable child viewport ID and an
+independent surface fitted to its controls with eight logical pixels of outer
+padding, rather than a fixed oversized rectangle. Rendering is synchronous on the UI
+thread: the child borrows the app's settings without a channel or shared mutable
+state. Exit explicitly targets ROOT; Escape, native close, selection, and focus
+loss after initial focus dismiss only the child. Where available, the root's
+monitor-space inner origin plus the click position places the child; unsupported
+placement falls back to the native window manager. It is not an embedded egui
+popup clipped to a small avatar. Native focus/placement still needs OS checks.
+
 The row may exceed monitor width; no wrapping, scrolling, or overflow policy is
 provided. `EmoteApp::clear_color` clears to transparent RGBA;
 `show` paints an opaque black surface by default. The right-click checkbox
@@ -170,7 +180,14 @@ uniformly fitted within each tile into a centered virtual 64×69 composition, wi
 five source rows of padding above it. That added padding becomes transparent when enabled; opaque
 black pixels already in the PNG, including the sender's five-row bottom gap,
 remain black. No color-keying, cropping, or pixel rewriting occurs, and toggling
-the background does not require re-uploading an unchanged frame.
+the background does not require re-uploading an unchanged frame. Multiple opaque
+tiles use the embedded `assets/avatar-frame.png` in place of the former bevel.
+One lazily loaded shared texture holds the cropped RGBA artwork. Its 851 × 851
+clear opening contains the complete virtual composition; the frame is painted
+above the avatar without covering labels. Uniform fitting preserves the frame's
+aspect ratio even during narrow transient resizes. Transparent tiles retain the
+previous four-point margin/image geometry, without a frame; a single avatar
+keeps the original borderless fit. See the [asset preparation contract](../assets/README.md).
 
 Drag, resize, and close are viewport commands asking the OS to act, not promises
 that every compositor implements them identically. Desktop alpha also depends

@@ -10,6 +10,31 @@ struct AvatarTexture {
     texture: TextureHandle,
 }
 
+fn load_avatar_frame(ctx: &egui::Context) -> TextureHandle {
+    // This trusted embedded asset is validated by the public rendering tests.
+    let mut reader = png::Decoder::new(std::io::Cursor::new(include_bytes!(
+        "../assets/avatar-frame.png"
+    )))
+    .read_info()
+    .expect("valid embedded avatar frame");
+    let mut rgba = vec![0; reader.output_buffer_size().expect("bounded frame asset")];
+    let info = reader
+        .next_frame(&mut rgba)
+        .expect("complete embedded frame");
+    assert_eq!(
+        (info.width, info.height, info.color_type, info.bit_depth),
+        (1100, 1092, png::ColorType::Rgba, png::BitDepth::Eight)
+    );
+    ctx.load_texture(
+        "avatar-frame",
+        ColorImage::from_rgba_unmultiplied(
+            [info.width as usize, info.height as usize],
+            &rgba[..info.buffer_size()],
+        ),
+        TextureOptions::NEAREST,
+    )
+}
+
 pub fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -29,9 +54,14 @@ pub struct EmoteApp {
     _receiver: Receiver,
     latest: LatestFrame,
     textures: HashMap<Option<String>, AvatarTexture>,
+    frame_texture: Option<TextureHandle>,
     tile_size: f32,
     applied_size: Vec2,
     transparent_background: bool,
+    menu_open: bool,
+    menu_position: Option<egui::Pos2>,
+    menu_size: Vec2,
+    menu_had_focus: bool,
     #[cfg(target_os = "windows")]
     applied_native_shadow: Option<bool>,
 }
@@ -41,9 +71,14 @@ impl EmoteApp {
             latest: receiver.latest(),
             _receiver: receiver,
             textures: HashMap::new(),
+            frame_texture: None,
             tile_size: 192.0,
             applied_size: Vec2::splat(192.0),
             transparent_background: false,
+            menu_open: false,
+            menu_position: None,
+            menu_size: egui::vec2(208.0, 176.0),
+            menu_had_focus: false,
             #[cfg(target_os = "windows")]
             applied_native_shadow: None,
         }
@@ -107,6 +142,14 @@ impl EmoteApp {
         if !self.transparent_background {
             ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
         }
+        let frame = if count > 1 && !self.transparent_background {
+            Some(
+                self.frame_texture
+                    .get_or_insert_with(|| load_avatar_frame(ui.ctx())),
+            )
+        } else {
+            None
+        };
         for (index, snapshot) in snapshots.iter().enumerate() {
             let texture = &self.textures[&snapshot.session_id].texture;
             // Divide the full surface into neighboring tiles, preserving the single
@@ -115,23 +158,25 @@ impl EmoteApp {
                 rect.min + Vec2::new(index as f32 * rect.width() / count as f32, 0.0),
                 Vec2::new(rect.width() / count as f32, rect.height()),
             );
-            let rect = if count > 1 {
-                let stroke_width = 3.0_f32.min(rect.width().min(rect.height()) * 0.5);
-                let edge = rect.shrink(stroke_width * 0.5);
-                let light = egui::Stroke::new(stroke_width, egui::Color32::from_gray(160));
-                let dark = egui::Stroke::new(stroke_width, egui::Color32::from_gray(64));
-                for (points, stroke) in [
-                    ([edge.left_top(), edge.right_top()], light),
-                    ([edge.left_top(), edge.left_bottom()], light),
-                    ([edge.right_top(), edge.right_bottom()], dark),
-                    ([edge.left_bottom(), edge.right_bottom()], dark),
-                ] {
-                    ui.painter().line_segment(points, stroke);
-                }
-                // Keep narrow tiles valid while the OS applies a wider viewport.
-                rect.shrink(4.0_f32.min(rect.width().min(rect.height()) * 0.25))
+            let (rect, decoration) = if let Some(frame) = &frame {
+                let artwork = frame.size_vec2();
+                let scale = (rect.width() / artwork.x).min(rect.height() / artwork.y);
+                let border = egui::Rect::from_center_size(rect.center(), artwork * scale);
+                // Verified clear source rectangle, including two source pixels
+                // of safety. Rounded frame corners never overlap avatar labels.
+                let opening = egui::Rect::from_min_max(
+                    border.min + egui::vec2(125.0, 121.0) * scale,
+                    border.min + egui::vec2(976.0, 972.0) * scale,
+                );
+                (opening, Some((frame.id(), border)))
+            } else if count > 1 {
+                // Preserve transparent-mode geometry, including narrow resizes.
+                (
+                    rect.shrink(4.0_f32.min(rect.width().min(rect.height()) * 0.25)),
+                    None,
+                )
             } else {
-                rect
+                (rect, None)
             };
             // Five padding rows balance the sender's five black rows at its foot.
             let scale = (rect.width() / 64.0).min(rect.height() / 69.0);
@@ -148,6 +193,14 @@ impl EmoteApp {
                 egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
                 egui::Color32::WHITE,
             );
+            if let Some((texture, border)) = decoration {
+                ui.painter().image(
+                    texture,
+                    border,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
         }
         if snapshots.is_empty() {
             ui.painter().text(
@@ -158,27 +211,92 @@ impl EmoteApp {
                 ui.visuals().text_color(),
             );
         }
-        response.context_menu(|ui| {
-            for size in [128, 192, 256, 384] {
-                if ui.button(format!("{size} × {size}")).clicked() {
-                    self.tile_size = size as f32;
-                    ui.close();
+        let ctx = ui.ctx().clone();
+        let menu_id = egui::ViewportId::from_hash_of("emote-options");
+        let opening = response.secondary_clicked();
+        if opening {
+            self.menu_open = true;
+            self.menu_had_focus = false;
+            self.menu_position = ctx.input(|input| {
+                Some(input.viewport().inner_rect?.min + response.interact_pointer_pos()?.to_vec2())
+            });
+        }
+        if self.menu_open {
+            let mut builder = egui::ViewportBuilder::default()
+                .with_title("Emote options")
+                .with_inner_size(self.menu_size)
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_transparent(false)
+                .with_window_level(egui::WindowLevel::AlwaysOnTop);
+            if let Some(position) = self.menu_position {
+                builder = builder.with_position(position);
+            }
+            // Synchronous child rendering keeps settings on the UI thread; no
+            // registry ownership, queue or cross-thread mutable state is shared.
+            ctx.show_viewport_immediate(menu_id, builder, |ui, _class| {
+                let (focused, close) = ui.input(|input| {
+                    (
+                        input.viewport().focused,
+                        input.viewport().close_requested() || input.key_pressed(egui::Key::Escape),
+                    )
+                });
+                if focused == Some(true) {
+                    self.menu_had_focus = true;
                 }
+                if close || (self.menu_had_focus && focused == Some(false)) {
+                    self.menu_open = false;
+                    return;
+                }
+                ui.painter()
+                    .rect_filled(ui.max_rect(), 0.0, ui.visuals().window_fill());
+                let mut content_width = 0.0_f32;
+                let content = egui::Frame::new().inner_margin(8).show(ui, |ui| {
+                    for size in [128, 192, 256, 384] {
+                        let option = ui.button(format!("{size} × {size}"));
+                        content_width = content_width.max(option.rect.width());
+                        if option.clicked() {
+                            self.tile_size = size as f32;
+                            self.menu_open = false;
+                        }
+                    }
+                    ui.separator();
+                    let transparency =
+                        ui.checkbox(&mut self.transparent_background, "Transparent background");
+                    content_width = content_width.max(transparency.rect.width());
+                    if transparency.changed() {
+                        self.menu_open = false;
+                    }
+                    ui.separator();
+                    let exit = ui.button("Exit");
+                    content_width = content_width.max(exit.rect.width());
+                    if exit.clicked() {
+                        ui.ctx()
+                            .send_viewport_cmd_to(egui::ViewportId::ROOT, ViewportCommand::Close);
+                        self.menu_open = false;
+                    }
+                });
+                // Size to the controls, not the full-width separators or the
+                // available viewport. Keep just eight points of outer padding.
+                let size = egui::vec2(
+                    (content_width + 16.0).ceil(),
+                    content.response.rect.height().ceil(),
+                );
+                if size != self.menu_size {
+                    self.menu_size = size;
+                    ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(size));
+                }
+            });
+            if !self.menu_open {
+                ctx.send_viewport_cmd_to(menu_id, ViewportCommand::Close);
+                ctx.request_repaint();
+            } else if opening {
+                if let Some(position) = self.menu_position {
+                    ctx.send_viewport_cmd_to(menu_id, ViewportCommand::OuterPosition(position));
+                }
+                ctx.send_viewport_cmd_to(menu_id, ViewportCommand::Focus);
             }
-            ui.separator();
-            if ui
-                .checkbox(&mut self.transparent_background, "Transparent background")
-                .changed()
-            {
-                ui.ctx().request_repaint();
-                ui.close();
-            }
-            ui.separator();
-            if ui.button("Exit").clicked() {
-                ui.ctx().send_viewport_cmd(ViewportCommand::Close);
-                ui.close();
-            }
-        });
+        }
         // Resize only for a changed count/selection, not every repaint or heartbeat.
         // The waiting surface occupies one tile before any frame arrives.
         let size = Vec2::new(count as f32 * self.tile_size, self.tile_size);
@@ -188,7 +306,7 @@ impl EmoteApp {
         }
         // Secondary dragging belongs to the context menu, never to window motion.
         // The popup owns its pointer presses, so selecting an item cannot move us.
-        if response.drag_started_by(PointerButton::Primary) && !response.context_menu_opened() {
+        if response.drag_started_by(PointerButton::Primary) && !self.menu_open {
             ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
         }
     }
@@ -222,6 +340,12 @@ impl eframe::App for EmoteApp {
 mod tests {
     use super::*;
     use egui::{Event, Pos2};
+    mod menu {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/menu.rs"
+        ));
+    }
 
     fn step(ctx: &egui::Context, app: &mut EmoteApp, events: Vec<Event>) -> egui::FullOutput {
         let mut output = ctx.run_ui(
@@ -261,7 +385,8 @@ mod tests {
         );
         step(ctx, app, vec![button(p, PointerButton::Secondary, false)]);
         // The popup needs its first sizing pass before its labels are painted.
-        let output = step(ctx, app, vec![]);
+        step(ctx, app, vec![]);
+        let output = menu::take();
         let p = output
             .shapes
             .iter()
@@ -274,15 +399,13 @@ mod tests {
                 None
             })
             .expect("transparency checkbox must be painted");
-        step(
-            ctx,
-            app,
-            vec![
-                Event::PointerMoved(p),
-                button(p, PointerButton::Primary, true),
-            ],
-        );
-        let output = step(ctx, app, vec![button(p, PointerButton::Primary, false)]);
+        menu::events(vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Primary, true),
+        ]);
+        step(ctx, app, vec![]);
+        menu::events(vec![button(p, PointerButton::Primary, false)]);
+        let output = step(ctx, app, vec![]);
         assert!(
             output.viewport_output[&egui::ViewportId::ROOT]
                 .commands
@@ -294,6 +417,8 @@ mod tests {
     #[test]
     fn native_shadow_policy_follows_background_toggle_round_trip() {
         let ctx = egui::Context::default();
+        menu::install();
+        ctx.set_embed_viewports(false);
         let receiver = Receiver::bind("127.0.0.1:0".parse().unwrap(), || {}).unwrap();
         let mut app = EmoteApp::new(receiver);
         step(&ctx, &mut app, vec![]);
