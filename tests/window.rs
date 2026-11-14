@@ -222,6 +222,118 @@ fn set_background_opacity(ctx: &egui::Context, app: &mut EmoteApp, fraction: f32
     step(ctx, app, vec![]);
 }
 
+fn expected_unframed_cards(bounds: egui::Rect, count: usize, vertical: bool) -> Vec<egui::Rect> {
+    let along = if vertical {
+        bounds.height()
+    } else {
+        bounds.width()
+    };
+    let gap = 5.0_f32.min(along / (2.0 * count as f32 - 1.0));
+    let span = (along - gap * (count - 1) as f32) / count as f32;
+    (0..count)
+        .map(|index| {
+            let offset = index as f32 * (span + gap);
+            if vertical {
+                egui::Rect::from_min_size(
+                    bounds.min + Vec2::new(0.0, offset),
+                    Vec2::new(bounds.width(), span),
+                )
+            } else {
+                egui::Rect::from_min_size(
+                    bounds.min + Vec2::new(offset, 0.0),
+                    Vec2::new(span, bounds.height()),
+                )
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn unframed_cards_keep_uniform_individual_composition_and_clear_separators() {
+    for vertical in [false, true] {
+        for count in [2, 3] {
+            let (ctx, mut app, address) = setup();
+            for (id, shade) in [("a", 42), ("b", 84), ("c", 126)].into_iter().take(count) {
+                session_request(address, id, 1, "emote", shade);
+            }
+            step(&ctx, &mut app, vec![]);
+            toggle_option(&ctx, &mut app, "No frame");
+            if vertical {
+                select_menu_option(&ctx, &mut app, "Vertical");
+            }
+            for opacity in [0.5, 0.0, 1.0] {
+                set_background_opacity(&ctx, &mut app, opacity);
+                for size in [128.0, 192.0, 256.0, 384.0] {
+                    let dimensions = if vertical {
+                        Vec2::new(size, count as f32 * size)
+                    } else {
+                        Vec2::new(count as f32 * size, size)
+                    };
+                    let bounds = egui::Rect::from_min_size(Pos2::ZERO, dimensions);
+                    let cards = expected_unframed_cards(bounds, count, vertical);
+                    let output = surface_step(&ctx, &mut app, dimensions);
+                    let images = avatars(&output);
+                    assert_eq!(images.len(), count);
+                    let paints: Vec<_> = output
+                        .shapes
+                        .iter()
+                        .filter_map(|s| match &s.shape {
+                            egui::Shape::Rect(r) if r.fill.a() > 0 => Some(r),
+                            _ => None,
+                        })
+                        .collect();
+                    assert_eq!(paints.len(), if opacity == 0.0 { 0 } else { count });
+                    for (index, ((_, image), card)) in images.iter().zip(&cards).enumerate() {
+                        let fitted = card.shrink(4.0);
+                        let scale = (fitted.width() / 64.0).min(fitted.height() / 69.0);
+                        let expected = egui::Rect::from_min_size(
+                            Pos2::new(
+                                fitted.center().x - 32.0 * scale,
+                                fitted.center().y - 69.0 * scale / 2.0 + 5.0 * scale,
+                            ),
+                            Vec2::splat(64.0 * scale),
+                        );
+                        assert!(
+                            (image.min - expected.min).length() < 0.001
+                                && (image.max - expected.max).length() < 0.001,
+                            "each card must apply its own PNG fit and top compensation: index={index}, vertical={vertical}, actual={image:?}, expected={expected:?}"
+                        );
+                        let top = image.top() - card.top();
+                        let content_bottom = card.bottom() - (image.bottom() - 5.0 * scale);
+                        assert!(
+                            (top - content_bottom).abs() < 0.001,
+                            "balance each PNG's five source footer rows independently"
+                        );
+                        if opacity > 0.0 {
+                            assert!(
+                                (paints[index].rect.min - card.min).length() < 0.001
+                                    && (paints[index].rect.max - card.max).length() < 0.001
+                            );
+                            assert_eq!(paints[index].corner_radius, egui::CornerRadius::same(8));
+                        }
+                    }
+                    for pair in cards.windows(2) {
+                        let strip = if vertical {
+                            egui::Rect::from_min_max(
+                                Pos2::new(bounds.left(), pair[0].bottom() + 0.001),
+                                Pos2::new(bounds.right(), pair[1].top() - 0.001),
+                            )
+                        } else {
+                            egui::Rect::from_min_max(
+                                Pos2::new(pair[0].right() + 0.001, bounds.top()),
+                                Pos2::new(pair[1].left() - 0.001, bounds.bottom()),
+                            )
+                        };
+                        assert!(output.shapes.iter().all(|s|!matches!(&s.shape,egui::Shape::Rect(r) if r.fill.a()>0 && r.rect.intersects(strip))));
+                        assert!(images.iter().all(|(_, image)| !image.intersects(strip)));
+                    }
+                    assert!(output.textures_delta.set.is_empty());
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn partial_opacity_preserves_single_avatar_rounded_contour() {
     let (ctx, mut app, address) = setup();
@@ -413,15 +525,18 @@ fn transparent_mode_uses_unframed_layout_and_preserves_opaque_frame_choice() {
                         .iter()
                         .any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.fill.a()>0))
                 );
-                for pair in images.windows(2) {
-                    let gap = if vertical {
-                        pair[1].1.top() - pair[0].1.bottom()
-                    } else {
-                        pair[1].1.left() - pair[0].1.right()
-                    };
+                let cards = expected_unframed_cards(
+                    egui::Rect::from_min_size(Pos2::ZERO, dimensions(count, size)),
+                    count,
+                    vertical,
+                );
+                for ((_, image), card) in images.iter().zip(cards) {
+                    let fitted = card.shrink(4.0);
+                    let scale = (fitted.width() / 64.0).min(fitted.height() / 69.0);
+                    assert!((image.center().x - fitted.center().x).abs() < 0.001);
                     assert!(
-                        (gap - 5.0).abs() < 0.001,
-                        "transparent mode must remove extra frame spacing without needing No frame: gap={gap}"
+                        (image.center().y - (fitted.center().y + 2.5 * scale)).abs() < 0.001,
+                        "automatic transparent layout must apply compensation per card"
                     );
                 }
                 assert!(output.textures_delta.set.is_empty());
@@ -617,11 +732,20 @@ fn stacking_selector_switches_axes_and_preserves_frames_and_transparent_gaps() {
             let images = avatars(&output);
             assert_eq!(images.len(), count);
             assert!(frames(&output).is_empty());
-            for pair in images.windows(2) {
-                assert!((pair[1].1.top() - pair[0].1.bottom() - 5.0).abs() < 0.001);
+            let cards: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Rect(r) if r.fill == egui::Color32::BLACK => Some(r.rect),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cards.len(), count);
+            for pair in cards.windows(2) {
+                assert!((pair[1].top() - pair[0].bottom() - 5.0).abs() < 0.001);
                 let strip = egui::Rect::from_min_max(
-                    egui::pos2(0.0, pair[0].1.bottom() + 0.001),
-                    egui::pos2(size, pair[1].1.top() - 0.001),
+                    egui::pos2(0.0, pair[0].bottom() + 0.001),
+                    egui::pos2(size, pair[1].top() - 0.001),
                 );
                 assert!(
                     output
@@ -636,7 +760,7 @@ fn stacking_selector_switches_axes_and_preserves_frames_and_transparent_gaps() {
                         .shapes
                         .iter()
                         .any(|s| matches!(&s.shape,egui::Shape::Rect(r)
-                    if r.fill==egui::Color32::BLACK && r.rect.contains(pair[0].1.center()))),
+                    if r.fill==egui::Color32::BLACK && r.rect.contains(pair[0].center()))),
                     "opaque avatar underlay preserved"
                 );
             }
@@ -652,9 +776,10 @@ fn stacking_selector_switches_axes_and_preserves_frames_and_transparent_gaps() {
             .iter()
             .any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.fill.a()>0))
     );
+    let clear_images = avatars(&transparent);
     assert!(
-        (avatars(&transparent)[1].1.top() - avatars(&transparent)[0].1.bottom() - 5.0).abs()
-            < 0.001
+        ((clear_images[1].1.center().y - clear_images[0].1.center().y) - 194.5).abs() < 0.001,
+        "transparent cards preserve their equal 189.5-point heights plus five-point separation"
     );
     drop(transparent);
     toggle_option(&ctx, &mut app, "No frame");
@@ -793,7 +918,7 @@ fn no_frame_rounds_card_corners_without_covering_them_with_avatar_pixels() {
 }
 
 #[test]
-fn no_frame_keeps_five_logical_pixels_between_adjacent_images() {
+fn no_frame_keeps_five_logical_pixels_between_adjacent_cards() {
     let (ctx, mut app, address) = setup();
     session_request(address, "a", 1, "emote", 42);
     session_request(address, "b", 1, "emote", 84);
@@ -816,15 +941,33 @@ fn no_frame_keeps_five_logical_pixels_between_adjacent_images() {
                 let images = avatars(&output);
                 assert_eq!(images.len(), count);
                 assert!(frames(&output).is_empty());
-                for pair in images.windows(2) {
-                    let gap = pair[1].1.left() - pair[0].1.right();
+                let cards = expected_unframed_cards(bounds, count, false);
+                if !transparent {
+                    let painted: Vec<_> = output
+                        .shapes
+                        .iter()
+                        .filter_map(|s| match &s.shape {
+                            egui::Shape::Rect(r) if r.fill == egui::Color32::BLACK => Some(r.rect),
+                            _ => None,
+                        })
+                        .collect();
+                    assert_eq!(painted.len(), count);
+                    for (actual, expected) in painted.iter().zip(&cards) {
+                        assert!(
+                            (actual.min - expected.min).length() < 0.001
+                                && (actual.max - expected.max).length() < 0.001
+                        );
+                    }
+                }
+                for pair in cards.windows(2) {
+                    let gap = pair[1].left() - pair[0].right();
                     assert!(
                         (gap - 5.0).abs() < 0.001,
-                        "{count} images, size {size}, transparent={transparent}: expected 5 px, got {gap}"
+                        "five clear pixels belong between card contours"
                     );
                     let strip = egui::Rect::from_min_max(
-                        egui::pos2(pair[0].1.right() + 0.001, bounds.top()),
-                        egui::pos2(pair[1].1.left() - 0.001, bounds.bottom()),
+                        egui::pos2(pair[0].right() + 0.001, bounds.top()),
+                        egui::pos2(pair[1].left() - 0.001, bounds.bottom()),
                     );
                     assert!(
                         output.shapes.iter().all(|shape| !matches!(
@@ -833,8 +976,9 @@ fn no_frame_keeps_five_logical_pixels_between_adjacent_images() {
                         )),
                         "the five-pixel separator must have no opaque background paint"
                     );
-                    assert!((pair[0].1.top() - pair[1].1.top()).abs() < 0.001);
-                    assert!((pair[0].1.size() - pair[1].1.size()).length() < 0.001);
+                    assert!(images.iter().all(|(_, image)| !image.intersects(strip)));
+                    assert!((pair[0].top() - pair[1].top()).abs() < 0.001);
+                    assert!((pair[0].size() - pair[1].size()).length() < 0.001);
                 }
                 assert!(images.iter().all(|(_, image)| bounds.contains_rect(*image)));
                 assert_eq!(

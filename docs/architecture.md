@@ -203,9 +203,14 @@ original borderless fit. See the
 
 The independent **No frame** checkbox starts unchecked and resets on restart.
 When checked, or whenever background opacity is below 100%, multiple avatars
-omit the artwork and center the images
-as a group with five logical pixels between adjacent image edges along the
-selected axis, preserving image dimensions and the virtual composition.
+omit the artwork. Five logical pixels are reserved between card contours, then
+the remaining extent is divided into equal card regions along the selected axis.
+Each card independently fits the original 64-by-69 composition inside a four-point
+inset, including the five-source-row top compensation; there is no global image
+group offset. Margins are therefore consistent across first, middle and last
+cards. Bitmap-to-bitmap spacing includes these internal margins; the clear
+separator itself is exactly five points. Vertical image size may shrink slightly
+to retain the original native window extent while reserving separators.
 Horizontal image rows leave vertical strips; vertical columns leave horizontal
 strips. Separator strips are left
 unpainted over the transparent renderer clear, even with the remaining background

@@ -21,13 +21,13 @@ If Cargo is not on PATH on the development host, substitute
 `/Users/santiagoperez/.cargo/bin/cargo` for `cargo`. These instructions do not
 install tools, modify PATH, or change sender configuration.
 
-The current suite contains **47 non-ignored tests: 19 receiver, 4 session lifecycle,
-23 window, and 1 private shadow-policy unit test**. The earlier frame/compact-popup checks
+The current suite contains **48 non-ignored tests: 19 receiver, 4 session lifecycle,
+24 window, and 1 private shadow-policy unit test**. The earlier frame/compact-popup checks
 passed all 15 then-existing window tests and the shadow policy; the earlier lifecycle check
 passed 4/4. The most recent full-suite attempt failed one receiver test with
 Windows OS 10053; it was not rerun for this UI update. See the evidence below.
 On macOS, Cargo also lists one ignored native startup test; it is not part of
-those 47. On other platforms,
+those 48. On other platforms,
 that startup test is excluded by a target guard.
 A headless suite needs no running GUI, but still compiles native dependencies;
 Linux builds need suitable graphics/toolchain libraries.
@@ -35,7 +35,7 @@ Linux builds need suitable graphics/toolchain libraries.
 | Test file | What its passing tests establish |
 | --- | --- |
 | [`tests/receiver.rs`](../tests/receiver.rs), 19 | Real TCP/HTTP validation, exact status/body assertions, rejection preserving snapshot and notification count, byte/deadline/connection bounds, PNG normalization, publication ordering, snapshots, bind failures, and owned shutdown; includes three response-reader guards |
-| [`tests/window.rs`](../tests/window.rs), 23 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry, no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
+| [`tests/window.rs`](../tests/window.rs), 24 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry, no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
 | [`tests/sessions.rs`](../tests/sessions.rs), 4 | Deterministic registry lease/expiry, reactivation, isolation, retention, ordering, legacy compatibility, caps, and finite replay horizon |
 | [`src/app.rs`](../src/app.rs), 1 | Checkbox-driven opaque → transparent → opaque shadow policy; no native window or compositor is exercised |
 | [`tests/startup.rs`](../tests/startup.rs), 1 ignored on macOS | An explicitly launched production process reports an occupied fixed port and terminates as expected on that host |
@@ -142,8 +142,9 @@ remote CI, native review approval or publication is claimed for this update.
 
 The exact **No frame** checkbox hides decorative PNG frames without changing the
 background setting. It starts unchecked and resets on restart. With multiple
-avatars it preserves image dimensions but centers their group with exactly five
-logical pixels between adjacent image edges. Separators always expose the
+avatars it divides the surface into equal cards with exactly five logical
+pixels between adjacent card contours. Each card independently fits the PNG
+with the original top compensation and four-point inset. Separators always expose the
 transparent renderer clear, even when the remaining background stays opaque
 black. No PNG colors or alpha are rewritten. Window dimensions and single-avatar geometry are unchanged.
 The gap is clamped only for transient surfaces too narrow to contain it. Transparent mode never paints frames, and switching
@@ -247,8 +248,10 @@ fixture incorrectly rejected the third avatar's first texture upload; it now
 asserts that upload before checking resize reuse. GREEN50 exposed a simulated
 menu click against the preceding four-point viewport; an idle layout pass in
 the input helper fixed the sequencing without changing application restoration.
-These checks do not establish uniform per-card top padding: that separately
-reported compact-layout geometry issue remains uncorrected. The receiver suite
+At that milestone, uniform per-card top padding was not established. The later
+Image6 correction below replaces global image packing with independent card
+composition; the original five-pixel bitmap-edge rule is superseded by the
+human-selected five-pixel card-contour rule. The receiver suite
 was not rerun, and its historical connection-aborted failure and unresolved
 native review are not superseded.
 
@@ -269,6 +272,26 @@ formatting, offline all-target Clippy with warnings denied, and an offline nativ
 build. This is geometry/policy proof, not human visual or all-DPI compositor
 acceptance. The historical receiver-suite failure and native-review limitation
 remain unchanged.
+
+### Uniform per-card composition after Image6
+
+Image6 confirmed unequal first/last margins: background bounds followed packed
+image edges instead of each card having its own padding. The human selected
+correcting this before publication, with five clear pixels between card contours.
+The surface extent and ordering stay unchanged. Card regions now have equal
+sizes; each uses the original 64-by-69 fit and five-source-row top compensation
+inside a four-point inset. This may slightly reduce vertical image size, rather
+than increasing the native window dimensions. Embedded source pixels are unchanged.
+
+RED59 reproduced the first horizontal image at x=14.2 instead of the independently
+fitted x=7.1. GREEN60 passed all 24 window tests and one shadow-policy test,
+formatting, offline all-target Clippy with warnings denied, and offline build.
+The new public-interface regression covers both axes, two/three avatars,
+128/192/256/384 surfaces, and 0/50/100% backgrounds; it checks each image's full
+bounds, per-card footer balance, rounded backgrounds, clear separators and cache
+reuse. Existing separation tests now inspect card contours rather than requiring
+zero internal image margins. Framed and single-avatar paths retain their checks.
+This is functional geometry proof, not human visual or all-DPI approval.
 
 ## User-supplied PNG frame and compact popup
 

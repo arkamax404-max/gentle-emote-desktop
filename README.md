@@ -58,8 +58,10 @@ At 128 points the avatar image is approximately 92 points wide, so the artwork
 has more space than the old thin border. Transparent mode draws no frame and
 automatically uses the compact unframed layout instead of retaining extra tile spacing.
 Checking **No frame** reclaims the unframed image fit while keeping an opaque
-background opaque. Multiple images are centered as a group with **5 logical
-pixels between adjacent image edges** along the selected stacking axis. The
+background opaque. The available surface is divided into equal cards with
+**5 logical pixels between adjacent card contours** along the selected axis.
+Each PNG is fitted and top-compensated inside its own four-point-inset card;
+the internal margin is not part of the transparent separator. The
 separator strips are **always transparent**, even with an opaque background
 behind the avatars. Cards use **8 logical pixel rounded corners**, including
 the edges next to separators. The background and image draw mesh share that
@@ -120,8 +122,8 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite contains **47 tests** (19 receiver, 4 session lifecycle,
-23 headless window, and 1 private shadow-policy unit test). The earlier popup
+The default suite contains **48 tests** (19 receiver, 4 session lifecycle,
+24 headless window, and 1 private shadow-policy unit test). The earlier popup
 update passed its 14 window tests, the shadow policy, and all 4 lifecycle tests.
 The frame update adds alpha/artwork checks and replaces the bevel geometry
 checks with frame-opening, texture reuse, and transparent/single-avatar checks. The

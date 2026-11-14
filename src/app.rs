@@ -245,64 +245,43 @@ impl EmoteApp {
             None
         };
         let packed_layout = if unframed && count > 1 {
-            let (along, across) = if vertical {
-                (rect.height(), rect.width())
+            let along = if vertical {
+                rect.height()
             } else {
-                (rect.width(), rect.height())
-            };
-            let padding = 4.0_f32.min(along.min(across) * 0.25);
-            let available = along - 2.0 * padding;
-            // The gap belongs between image edges, not between virtual tiles.
-            // Clamp only while a transient OS resize is too narrow for the gaps.
-            // Leave positive image space even on tiny transient surfaces.
-            let gap = 5.0_f32.min(available / (2.0 * count as f32 - 1.0));
-            // Vertical packing reserves the composition's global top padding.
-            let units = count as f32 + if vertical { 5.0 / 64.0 } else { 0.0 };
-            let side = ((available - gap * (count - 1) as f32) / units)
-                .min((across - 2.0 * padding) * 64.0 / 69.0)
-                .max(0.0);
-            Some((rect.center(), side, gap))
+                rect.width()
+            }
+            .max(0.0);
+            // Reserve clear separators first, then give every card equal space.
+            // Keep cards positive during tiny transient OS resizes.
+            let gap = 5.0_f32.min(along / (2.0 * count as f32 - 1.0));
+            let span = (along - gap * (count - 1) as f32) / count as f32;
+            Some((span, gap))
         } else {
             None
         };
         let radius = 8.0_f32.min(rect.width().min(rect.height()) * 0.25).round();
-        // Background and textured meshes must use exactly the same card bounds.
-        let card_rect = |center: egui::Pos2, side: f32, gap: f32, index: usize| {
-            let (center, min, max) = if vertical {
-                (center.y + side * 5.0 / 128.0, rect.top(), rect.bottom())
-            } else {
-                (center.x, rect.left(), rect.right())
-            };
-            let first = center - (side * count as f32 + gap * (count - 1) as f32) / 2.0;
-            let start = if index == 0 {
-                min
-            } else {
-                first + index as f32 * (side + gap)
-            };
-            let end = if index + 1 == count {
-                max
-            } else {
-                first + index as f32 * (side + gap) + side
-            };
+        // Each image is composed inside its own card, never a global image group.
+        let card_rect = |span: f32, gap: f32, index: usize| {
+            let offset = index as f32 * (span + gap);
             if vertical {
-                egui::Rect::from_min_max(
-                    egui::pos2(rect.left(), start),
-                    egui::pos2(rect.right(), end),
+                egui::Rect::from_min_size(
+                    rect.min + Vec2::new(0.0, offset),
+                    Vec2::new(rect.width(), span),
                 )
             } else {
-                egui::Rect::from_min_max(
-                    egui::pos2(start, rect.top()),
-                    egui::pos2(end, rect.bottom()),
+                egui::Rect::from_min_size(
+                    rect.min + Vec2::new(offset, 0.0),
+                    Vec2::new(span, rect.height()),
                 )
             }
         };
         if self.background_opacity > 0 {
             let alpha = ((u16::from(self.background_opacity) * 255 + 50) / 100) as u8;
             let fill = egui::Color32::from_black_alpha(alpha);
-            if let Some((center, side, gap)) = packed_layout {
+            if let Some((span, gap)) = packed_layout {
                 for index in 0..count {
                     ui.painter()
-                        .rect_filled(card_rect(center, side, gap, index), radius, fill);
+                        .rect_filled(card_rect(span, gap, index), radius, fill);
                 }
             } else {
                 ui.painter()
@@ -327,19 +306,10 @@ impl EmoteApp {
                 )
             };
             let rect = egui::Rect::from_min_size(rect.min + offset, size);
-            let (rect, decoration) = if let Some((center, side, gap)) = packed_layout {
-                let extent = side * count as f32 + gap * (count - 1) as f32;
-                let offset = -extent / 2.0 + side / 2.0 + index as f32 * (side + gap);
-                let center = center
-                    + if vertical {
-                        Vec2::new(0.0, offset)
-                    } else {
-                        Vec2::new(offset, 0.0)
-                    };
-                (
-                    egui::Rect::from_center_size(center, egui::vec2(side, side * 69.0 / 64.0)),
-                    None,
-                )
+            let (rect, decoration) = if let Some((span, gap)) = packed_layout {
+                let card = card_rect(span, gap, index);
+                let padding = 4.0_f32.min(card.width().min(card.height()) * 0.25);
+                (card.shrink(padding), None)
             } else if let Some(frame) = &frame {
                 let artwork = frame.size_vec2();
                 let scale = (rect.width() / artwork.x).min(rect.height() / artwork.y);
@@ -369,12 +339,12 @@ impl EmoteApp {
                 ),
                 Vec2::splat(64.0 * scale),
             );
-            if let Some((center, side, gap)) = packed_layout {
+            if let Some((span, gap)) = packed_layout {
                 paint_rounded_card_image(
                     ui.painter(),
                     texture.id(),
                     image_rect,
-                    card_rect(center, side, gap, index),
+                    card_rect(span, gap, index),
                     radius,
                 );
             } else if partially_opaque {
