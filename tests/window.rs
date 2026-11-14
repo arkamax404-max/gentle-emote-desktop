@@ -403,6 +403,128 @@ fn stacking_selector_switches_axes_and_preserves_frames_and_transparent_gaps() {
 }
 
 #[test]
+fn no_frame_rounding_clips_bottom_image_corners_to_card_contour() {
+    for vertical in [false, true] {
+        let (ctx, mut app, address) = setup();
+        for (id, shade) in [("a", 42), ("b", 84), ("c", 126)] {
+            session_request(address, id, 1, "emote", shade);
+        }
+        step(&ctx, &mut app, vec![]);
+        if vertical {
+            select_menu_option(&ctx, &mut app, "Vertical");
+        }
+        toggle_option(&ctx, &mut app, "No frame");
+        for size in [128.0, 192.0, 256.0, 384.0] {
+            let dimensions = if vertical {
+                Vec2::new(size, 3.0 * size)
+            } else {
+                Vec2::new(3.0 * size, size)
+            };
+            let output = surface_step(&ctx, &mut app, dimensions);
+            let cards: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(card) if card.fill == egui::Color32::BLACK => Some(card.rect),
+                    _ => None,
+                })
+                .collect();
+            let meshes: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Mesh(mesh)
+                        if output
+                            .1
+                            .get(&mesh.texture_id)
+                            .is_some_and(|name| name.starts_with("emote-session:")) =>
+                    {
+                        Some(mesh)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(meshes.len(), 3);
+            for (card, mesh) in cards.iter().zip(meshes) {
+                assert!(!mesh.indices.is_empty(), "clipping must keep the image");
+                for vertex in &mesh.vertices {
+                    let center = egui::pos2(
+                        vertex.pos.x.clamp(card.left() + 8.0, card.right() - 8.0),
+                        vertex.pos.y.clamp(card.top() + 8.0, card.bottom() - 8.0),
+                    );
+                    assert!(
+                        (vertex.pos - center).length_sq() <= 64.01,
+                        "image mesh paints outside the eight-pixel rounded card: {:?}, card={card:?}, vertical={vertical}",
+                        vertex.pos
+                    );
+                    assert!(
+                        (0.0..=1.0).contains(&vertex.uv.x) && (0.0..=1.0).contains(&vertex.uv.y)
+                    );
+                }
+            }
+            assert!(
+                output.textures_delta.set.is_empty(),
+                "mask the draw mesh without rewriting cached PNG pixels"
+            );
+        }
+    }
+}
+
+#[test]
+fn no_frame_rounds_card_corners_without_covering_them_with_avatar_pixels() {
+    for vertical in [false, true] {
+        let (ctx, mut app, address) = setup();
+        for (id, shade) in [("a", 42), ("b", 84), ("c", 126)] {
+            session_request(address, id, 1, "emote", shade);
+        }
+        step(&ctx, &mut app, vec![]);
+        if vertical {
+            select_menu_option(&ctx, &mut app, "Vertical");
+        }
+        toggle_option(&ctx, &mut app, "No frame");
+        for size in [128.0, 192.0, 256.0, 384.0] {
+            let dimensions = if vertical {
+                Vec2::new(size, 3.0 * size)
+            } else {
+                Vec2::new(3.0 * size, size)
+            };
+            let output = surface_step(&ctx, &mut app, dimensions);
+            let cards: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Rect(card) if card.fill == egui::Color32::BLACK => Some(card),
+                    _ => None,
+                })
+                .collect();
+            let images = avatars(&output);
+            assert_eq!(cards.len(), 3);
+            assert_eq!(images.len(), 3);
+            for (card, (_, image)) in cards.iter().zip(&images) {
+                assert_eq!(
+                    card.corner_radius,
+                    egui::CornerRadius::same(8),
+                    "card rounding must match the original eight-pixel appearance"
+                );
+                let inset = if vertical {
+                    (image.left() - card.rect.left()).min(card.rect.right() - image.right())
+                } else {
+                    (image.top() - card.rect.top()).min(card.rect.bottom() - image.bottom())
+                };
+                assert!(
+                    inset + 0.001 >= 4.0,
+                    "retain the original image bounds and four-point composition margins"
+                );
+            }
+            assert!(
+                output.textures_delta.set.is_empty(),
+                "round only background paint, not source pixels"
+            );
+        }
+    }
+}
+
+#[test]
 fn no_frame_keeps_five_logical_pixels_between_adjacent_images() {
     let (ctx, mut app, address) = setup();
     session_request(address, "a", 1, "emote", 42);

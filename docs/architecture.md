@@ -222,3 +222,8 @@ layout. The source PNGs and original artwork are unchanged.
 Horizontal. Each selection preserves the chosen per-avatar size, cached
 textures, frame preference and clear five-point separators. The root window
 resizes to the selected axis; there is no wrapping.
+
+Unframed multi-avatar cards use an eight-point rounded contour shared by the
+background and image mesh. Convex draw-time clipping prevents opaque lower
+image corners from covering the cutouts. PNG pixels are not rewritten. This
+does not correct the separately reported per-card top-padding inconsistency.

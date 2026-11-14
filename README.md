@@ -103,8 +103,8 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite contains **42 tests** (19 receiver, 4 session lifecycle,
-18 headless window, and 1 private shadow-policy unit test). The earlier popup
+The default suite contains **44 tests** (19 receiver, 4 session lifecycle,
+20 headless window, and 1 private shadow-policy unit test). The earlier popup
 update passed its 14 window tests, the shadow policy, and all 4 lifecycle tests.
 The frame update adds alpha/artwork checks and replaces the bevel geometry
 checks with frame-opening, texture reuse, and transparent/single-avatar checks. The
@@ -138,3 +138,8 @@ layout. The source PNGs and original artwork are unchanged.
 Horizontal. Each selection preserves the chosen per-avatar size, cached
 textures, frame preference and clear five-point separators. The root window
 resizes to the selected axis; there is no wrapping.
+
+Unframed multi-avatar cards use an eight-point rounded contour shared by the
+background and image mesh. Convex draw-time clipping prevents opaque lower
+image corners from covering the cutouts. PNG pixels are not rewritten. This
+does not correct the separately reported per-card top-padding inconsistency.

@@ -35,6 +35,96 @@ fn load_avatar_frame(ctx: &egui::Context) -> TextureHandle {
     )
 }
 
+/// Intersect the image quad with the rounded card before deriving its UVs.
+/// Background rounding alone cannot mask opaque pixels at the image's foot.
+fn paint_rounded_card_image(
+    painter: &egui::Painter,
+    texture: egui::TextureId,
+    image: egui::Rect,
+    card: egui::Rect,
+    radius: f32,
+) {
+    if image.width() <= 0.0 || image.height() <= 0.0 {
+        return;
+    }
+    let radius = radius.min(card.width() / 2.0).min(card.height() / 2.0);
+    let mut points = Vec::with_capacity(36);
+    use std::f32::consts::{FRAC_PI_2, PI};
+    for (center, start) in [
+        (
+            egui::pos2(card.right() - radius, card.top() + radius),
+            -FRAC_PI_2,
+        ),
+        (
+            egui::pos2(card.right() - radius, card.bottom() - radius),
+            0.0,
+        ),
+        (
+            egui::pos2(card.left() + radius, card.bottom() - radius),
+            FRAC_PI_2,
+        ),
+        (egui::pos2(card.left() + radius, card.top() + radius), PI),
+    ] {
+        for step in 0..=8 {
+            let angle = start + FRAC_PI_2 * step as f32 / 8.0;
+            points.push(center + egui::vec2(angle.cos(), angle.sin()) * radius);
+        }
+    }
+    // Clip the convex outline to the original image, not the other way around:
+    // padding keeps its own background, and the complete source UV fit is stable.
+    for (horizontal, boundary, greater) in [
+        (true, image.left(), true),
+        (true, image.right(), false),
+        (false, image.top(), true),
+        (false, image.bottom(), false),
+    ] {
+        let input = std::mem::take(&mut points);
+        let Some(mut previous) = input.last().copied() else {
+            return;
+        };
+        let distance = |point: egui::Pos2| {
+            let coordinate = if horizontal { point.x } else { point.y };
+            if greater {
+                coordinate - boundary
+            } else {
+                boundary - coordinate
+            }
+        };
+        let mut previous_distance = distance(previous);
+        for current in input {
+            let current_distance = distance(current);
+            if (previous_distance >= 0.0) != (current_distance >= 0.0) {
+                let t = previous_distance / (previous_distance - current_distance);
+                points.push(previous + (current - previous) * t);
+            }
+            if current_distance >= 0.0 {
+                points.push(current);
+            }
+            previous = current;
+            previous_distance = current_distance;
+        }
+    }
+    if points.len() < 3 {
+        return;
+    }
+    let mut mesh = egui::epaint::Mesh::with_texture(texture);
+    for point in points {
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: point,
+            uv: egui::pos2(
+                ((point.x - image.left()) / image.width()).clamp(0.0, 1.0),
+                ((point.y - image.top()) / image.height()).clamp(0.0, 1.0),
+            ),
+            color: egui::Color32::WHITE,
+        });
+    }
+    for index in 1..mesh.vertices.len() - 1 {
+        mesh.indices
+            .extend_from_slice(&[0, index as u32, (index + 1) as u32]);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
 pub fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -172,6 +262,7 @@ impl EmoteApp {
         } else {
             None
         };
+        let radius = 8.0_f32.min(rect.width().min(rect.height()) * 0.25).round();
         // Background and textured meshes must use exactly the same card bounds.
         let card_rect = |center: egui::Pos2, side: f32, gap: f32, index: usize| {
             let (center, min, max) = if vertical {
@@ -207,7 +298,7 @@ impl EmoteApp {
             if let Some((center, side, gap)) = packed_layout {
                 for index in 0..count {
                     ui.painter()
-                        .rect_filled(card_rect(center, side, gap, index), 0.0, fill);
+                        .rect_filled(card_rect(center, side, gap, index), radius, fill);
                 }
             } else {
                 ui.painter().rect_filled(rect, 0.0, fill);
@@ -273,12 +364,22 @@ impl EmoteApp {
                 ),
                 Vec2::splat(64.0 * scale),
             );
-            ui.painter().image(
-                texture.id(),
-                image_rect,
-                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
+            if let Some((center, side, gap)) = packed_layout {
+                paint_rounded_card_image(
+                    ui.painter(),
+                    texture.id(),
+                    image_rect,
+                    card_rect(center, side, gap, index),
+                    radius,
+                );
+            } else {
+                ui.painter().image(
+                    texture.id(),
+                    image_rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
             if let Some((texture, border)) = decoration {
                 ui.painter().image(
                     texture,
