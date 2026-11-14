@@ -47,3 +47,35 @@ pub fn take_optional() -> Option<egui::FullOutput> {
 pub fn take() -> egui::FullOutput {
     take_optional().expect("independent menu must render")
 }
+
+pub fn slider_position(label: &str, fraction: f32) -> egui::Pos2 {
+    let output = take();
+    let caption_bottom = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == label => {
+                Some(text.pos.y + text.galley.size().y)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("slider label must be painted: {label}"));
+    let track = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect)
+                if rect.rect.top() >= caption_bottom
+                    && (70.0..=140.0).contains(&rect.rect.width())
+                    && (2.0..=20.0).contains(&rect.rect.height()) =>
+            {
+                Some(rect.rect)
+            }
+            _ => None,
+        })
+        .expect("slider track must be painted below its label");
+    egui::pos2(
+        track.left() + 0.5 + (track.width() - 1.0) * fraction,
+        track.center().y,
+    )
+}

@@ -227,3 +227,10 @@ Unframed multi-avatar cards use an eight-point rounded contour shared by the
 background and image mesh. Convex draw-time clipping prevents opaque lower
 image corners from covering the cutouts. PNG pixels are not rewritten. This
 does not correct the separately reported per-card top-padding inconsistency.
+
+Background opacity adjusts only the background from 0 to 100 percent,
+initially 100. PNG pixels, labels and the options menu are not faded.
+Transparent background selects zero and restores the last nonzero percentage
+when unchecked. Every percentage below 100 uses unframed packing and disables
+the Windows native shadow. Settings reset on restart. The independent No frame
+preference is preserved for fully opaque mode.

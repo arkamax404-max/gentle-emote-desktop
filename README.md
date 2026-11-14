@@ -103,8 +103,8 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite contains **44 tests** (19 receiver, 4 session lifecycle,
-20 headless window, and 1 private shadow-policy unit test). The earlier popup
+The default suite contains **46 tests** (19 receiver, 4 session lifecycle,
+22 headless window, and 1 private shadow-policy unit test). The earlier popup
 update passed its 14 window tests, the shadow policy, and all 4 lifecycle tests.
 The frame update adds alpha/artwork checks and replaces the bevel geometry
 checks with frame-opening, texture reuse, and transparent/single-avatar checks. The
@@ -143,3 +143,10 @@ Unframed multi-avatar cards use an eight-point rounded contour shared by the
 background and image mesh. Convex draw-time clipping prevents opaque lower
 image corners from covering the cutouts. PNG pixels are not rewritten. This
 does not correct the separately reported per-card top-padding inconsistency.
+
+Background opacity adjusts only the background from 0 to 100 percent,
+initially 100. PNG pixels, labels and the options menu are not faded.
+Transparent background selects zero and restores the last nonzero percentage
+when unchecked. Every percentage below 100 uses unframed packing and disables
+the Windows native shadow. Settings reset on restart. The independent No frame
+preference is preserved for fully opaque mode.

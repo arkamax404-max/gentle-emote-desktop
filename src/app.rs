@@ -147,7 +147,8 @@ pub struct EmoteApp {
     frame_texture: Option<TextureHandle>,
     tile_size: f32,
     applied_size: Vec2,
-    transparent_background: bool,
+    background_opacity: u8,
+    last_background_opacity: u8,
     no_frame: bool,
     vertical_stacking: bool,
     menu_open: bool,
@@ -166,7 +167,8 @@ impl EmoteApp {
             frame_texture: None,
             tile_size: 192.0,
             applied_size: Vec2::splat(192.0),
-            transparent_background: false,
+            background_opacity: 100,
+            last_background_opacity: 100,
             no_frame: false,
             vertical_stacking: false,
             menu_open: false,
@@ -180,7 +182,7 @@ impl EmoteApp {
 
     #[cfg(any(target_os = "windows", test))]
     fn native_shadow_enabled(&self) -> bool {
-        !self.transparent_background
+        self.background_opacity == 100
     }
 
     /// Shared by the native app and small embedding examples. No timer or frame
@@ -232,7 +234,7 @@ impl EmoteApp {
             ui.scope_id().with("emote-surface"),
             egui::Sense::click_and_drag(),
         );
-        let unframed = self.no_frame || self.transparent_background;
+        let unframed = self.no_frame || self.background_opacity < 100;
         let frame = if count > 1 && !unframed {
             Some(
                 self.frame_texture
@@ -293,8 +295,9 @@ impl EmoteApp {
                 )
             }
         };
-        if !self.transparent_background {
-            let fill = egui::Color32::BLACK;
+        if self.background_opacity > 0 {
+            let alpha = ((u16::from(self.background_opacity) * 255 + 50) / 100) as u8;
+            let fill = egui::Color32::from_black_alpha(alpha);
             if let Some((center, side, gap)) = packed_layout {
                 for index in 0..count {
                     ui.painter()
@@ -448,11 +451,27 @@ impl EmoteApp {
                         }
                     }
                     ui.separator();
-                    let transparency =
-                        ui.checkbox(&mut self.transparent_background, "Transparent background");
+                    let mut transparent = self.background_opacity == 0;
+                    let transparency = ui.checkbox(&mut transparent, "Transparent background");
                     content_width = content_width.max(transparency.rect.width());
                     if transparency.changed() {
+                        self.background_opacity = if transparent {
+                            0
+                        } else {
+                            self.last_background_opacity
+                        };
                         self.menu_open = false;
+                    }
+                    let opacity_label = ui.label("Background opacity");
+                    content_width = content_width.max(opacity_label.rect.width());
+                    let opacity = ui
+                        .add(egui::Slider::new(&mut self.background_opacity, 0..=100).suffix("%"));
+                    content_width = content_width.max(opacity.rect.width());
+                    if opacity.changed() {
+                        if self.background_opacity > 0 {
+                            self.last_background_opacity = self.background_opacity;
+                        }
+                        ctx.request_repaint();
                     }
                     let no_frame = ui.checkbox(&mut self.no_frame, "No frame");
                     content_width = content_width.max(no_frame.rect.width());
@@ -581,6 +600,10 @@ mod tests {
     }
 
     fn toggle_background(ctx: &egui::Context, app: &mut EmoteApp) {
+        background_control(ctx, app, None);
+    }
+
+    fn background_control(ctx: &egui::Context, app: &mut EmoteApp, fraction: Option<f32>) {
         // Match the integration round trip's idle pass between checkbox clicks:
         // let the previous popup close before opening the menu again.
         step(ctx, app, vec![]);
@@ -596,19 +619,22 @@ mod tests {
         step(ctx, app, vec![button(p, PointerButton::Secondary, false)]);
         // The popup needs its first sizing pass before its labels are painted.
         step(ctx, app, vec![]);
-        let output = menu::take();
-        let p = output
-            .shapes
-            .iter()
-            .find_map(|shape| {
-                if let egui::Shape::Text(text) = &shape.shape
-                    && text.galley.text() == "Transparent background"
-                {
-                    return Some(text.pos + Vec2::splat(4.0));
-                }
-                None
-            })
-            .expect("transparency checkbox must be painted");
+        let p = if let Some(fraction) = fraction {
+            menu::slider_position("Background opacity", fraction)
+        } else {
+            menu::take()
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.text() == "Transparent background"
+                    {
+                        return Some(text.pos + Vec2::splat(4.0));
+                    }
+                    None
+                })
+                .expect("transparency checkbox must be painted")
+        };
         menu::events(vec![
             Event::PointerMoved(p),
             button(p, PointerButton::Primary, true),
@@ -616,6 +642,16 @@ mod tests {
         step(ctx, app, vec![]);
         menu::events(vec![button(p, PointerButton::Primary, false)]);
         let output = step(ctx, app, vec![]);
+        if fraction.is_some() {
+            menu::events(vec![Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }]);
+            step(ctx, app, vec![]);
+        }
         assert!(
             output.viewport_output[&egui::ViewportId::ROOT]
                 .commands
@@ -649,6 +685,22 @@ mod tests {
         assert!(
             app.native_shadow_enabled(),
             "returning to opaque mode must restore its shadow policy"
+        );
+        background_control(&ctx, &mut app, Some(0.5));
+        assert!(
+            !app.native_shadow_enabled(),
+            "partial opacity also disables native shadow"
+        );
+        toggle_background(&ctx, &mut app);
+        toggle_background(&ctx, &mut app);
+        assert!(
+            !app.native_shadow_enabled(),
+            "restore the chosen partial opacity, not opaque shadow"
+        );
+        background_control(&ctx, &mut app, Some(1.0));
+        assert!(
+            app.native_shadow_enabled(),
+            "100 percent restores native opaque shadow policy"
         );
     }
 }

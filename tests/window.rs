@@ -193,6 +193,208 @@ fn supplied_frame_derivative_has_real_alpha_and_preserves_neon_artwork() {
     );
 }
 
+fn set_background_opacity(ctx: &egui::Context, app: &mut EmoteApp, fraction: f32) {
+    select_menu_option(ctx, app, "Background opacity");
+    let point = menu::slider_position("Background opacity", fraction);
+    menu::events(vec![
+        Event::PointerMoved(point),
+        button(point, PointerButton::Primary, true),
+    ]);
+    step(ctx, app, vec![]);
+    menu::events(vec![button(point, PointerButton::Primary, false)]);
+    step(ctx, app, vec![]);
+    let child = menu::take();
+    assert!(
+        child
+            .shapes
+            .iter()
+            .any(|s| matches!(&s.shape,egui::Shape::Rect(r)
+        if r.fill.a()==255 && r.rect.contains(Pos2::new(1.0,1.0)))),
+        "menu stays opaque while adjusting opacity"
+    );
+    menu::events(vec![Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    }]);
+    step(ctx, app, vec![]);
+}
+
+#[test]
+fn background_opacity_controls_only_underlay_and_restores_percentage() {
+    let (ctx, mut app, address) = setup();
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "b", 1, "emote", 84);
+    let initial = wide_step(&ctx, &mut app, 384.0);
+    let frame_id = frames(&initial)[0].0;
+    let images: Vec<_> = avatars(&initial).iter().map(|(id, _)| *id).collect();
+    drop(initial);
+    set_background_opacity(&ctx, &mut app, 0.5);
+    let half = wide_step(&ctx, &mut app, 384.0);
+    let fill: Vec<_> = half
+        .shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::Shape::Rect(r) if r.fill.a() > 0 => Some(r.fill),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fill.len(), 2);
+    assert!(
+        fill.iter().all(|color| color.to_array() == [0, 0, 0, 128]),
+        "50% opacity applies to the black underlay only"
+    );
+    assert!(frames(&half).is_empty());
+    assert_eq!(
+        avatars(&half).iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        images
+    );
+    assert!(
+        half.shapes.iter().all(|s| match &s.shape {
+            egui::Shape::Mesh(mesh)
+                if half
+                    .1
+                    .get(&mesh.texture_id)
+                    .is_some_and(|name| name.starts_with("emote-session:")) =>
+                mesh.vertices
+                    .iter()
+                    .all(|v| v.color == egui::Color32::WHITE),
+            _ => true,
+        }),
+        "do not fade image pixels or embedded text"
+    );
+    assert!(half.textures_delta.set.is_empty());
+    drop(half);
+    set_background_opacity(&ctx, &mut app, 0.0);
+    let clear = wide_step(&ctx, &mut app, 384.0);
+    assert!(
+        !clear
+            .shapes
+            .iter()
+            .any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.fill.a()>0))
+    );
+    assert_eq!(avatars(&clear).len(), 2);
+    drop(clear);
+    toggle_background(&ctx, &mut app);
+    let restored = wide_step(&ctx, &mut app, 384.0);
+    assert!(
+        restored
+            .shapes
+            .iter()
+            .any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.fill.a()==128)),
+        "unchecking full transparency restores the last nonzero slider value"
+    );
+    drop(restored);
+    set_background_opacity(&ctx, &mut app, 1.0);
+    let opaque = wide_step(&ctx, &mut app, 384.0);
+    assert_eq!(
+        frames(&opaque)
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        vec![frame_id; 2]
+    );
+    assert!(opaque.textures_delta.set.is_empty());
+}
+
+#[test]
+fn transparent_mode_uses_unframed_layout_and_preserves_opaque_frame_choice() {
+    for vertical in [false, true] {
+        let (ctx, mut app, address) = setup();
+        session_request(address, "a", 1, "emote", 42);
+        session_request(address, "b", 1, "emote", 84);
+        step(&ctx, &mut app, vec![]);
+        if vertical {
+            select_menu_option(&ctx, &mut app, "Vertical");
+        }
+        let dimensions = |count: usize, size| {
+            if vertical {
+                Vec2::new(size, count as f32 * size)
+            } else {
+                Vec2::new(count as f32 * size, size)
+            }
+        };
+        let initial = surface_step(&ctx, &mut app, dimensions(2, 192.0));
+        let frame_id = frames(&initial)[0].0;
+        assert_eq!(frames(&initial).len(), 2);
+        drop(initial);
+        toggle_background(&ctx, &mut app);
+        for count in [2, 3] {
+            if count == 3 {
+                session_request(address, "c", 1, "emote", 126);
+                let introduced = surface_step(&ctx, &mut app, dimensions(count, 192.0));
+                let new_id = avatars(&introduced)[2].0;
+                assert!(
+                    introduced
+                        .textures_delta
+                        .set
+                        .iter()
+                        .any(|(id, _)| *id == new_id),
+                    "the newly introduced avatar must upload its initial texture"
+                );
+                drop(introduced);
+            }
+            for size in [128.0, 192.0, 256.0, 384.0] {
+                let output = surface_step(&ctx, &mut app, dimensions(count, size));
+                let images = avatars(&output);
+                assert_eq!(images.len(), count);
+                assert!(frames(&output).is_empty());
+                assert!(
+                    !output
+                        .shapes
+                        .iter()
+                        .any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.fill.a()>0))
+                );
+                for pair in images.windows(2) {
+                    let gap = if vertical {
+                        pair[1].1.top() - pair[0].1.bottom()
+                    } else {
+                        pair[1].1.left() - pair[0].1.right()
+                    };
+                    assert!(
+                        (gap - 5.0).abs() < 0.001,
+                        "transparent mode must remove extra frame spacing without needing No frame: gap={gap}"
+                    );
+                }
+                assert!(output.textures_delta.set.is_empty());
+            }
+        }
+        session_request(address, "c", 2, "emote/close", 0);
+        for extent in [16.0, 4.0] {
+            let size = if vertical {
+                Vec2::new(192.0, extent)
+            } else {
+                Vec2::new(extent, 192.0)
+            };
+            let output = surface_step(&ctx, &mut app, size);
+            let images = avatars(&output);
+            assert_eq!(images.len(), 2, "narrow resizes must not discard avatars");
+            assert!(images.iter().all(|(_, image)| image.is_positive()
+                && egui::Rect::from_min_size(Pos2::ZERO, size).contains_rect(*image)));
+        }
+        toggle_background(&ctx, &mut app);
+        let restored = surface_step(&ctx, &mut app, dimensions(2, 192.0));
+        assert_eq!(
+            frames(&restored)
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            vec![frame_id; 2],
+            "returning to opaque restores the original frame preference and cached asset"
+        );
+        drop(restored);
+        toggle_option(&ctx, &mut app, "No frame");
+        toggle_background(&ctx, &mut app);
+        toggle_background(&ctx, &mut app);
+        assert!(
+            frames(&surface_step(&ctx, &mut app, dimensions(2, 192.0))).is_empty(),
+            "an explicit opaque No frame choice also survives transparency toggles"
+        );
+    }
+}
+
 #[test]
 fn multi_avatar_png_frames_preserve_transparency_single_fit_and_labels() {
     let (info, pixels) = frame_pixels();
@@ -722,6 +924,7 @@ fn small_surface_menu_has_independent_viewport_and_complete_controls() {
             "256 × 256",
             "384 × 384",
             "Transparent background",
+            "Background opacity",
             "No frame",
             "Vertical / Horizontal",
             "Horizontal",
