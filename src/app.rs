@@ -3,7 +3,12 @@ use crate::receiver::{Frame, LatestFrame, Receiver};
 use eframe::egui::{
     self, ColorImage, PointerButton, TextureHandle, TextureOptions, Vec2, ViewportCommand,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
+
+fn idle_clock_text(now: chrono::DateTime<chrono::FixedOffset>) -> String {
+    now.format("%H:%M:%S\n%d/%m/%Y\nWaiting Agents...")
+        .to_string()
+}
 
 struct AvatarTexture {
     uploaded: Arc<Frame>,
@@ -148,7 +153,7 @@ pub struct EmoteApp {
     tile_size: f32,
     applied_size: Vec2,
     background_opacity: u8,
-    last_background_opacity: u8,
+    transparent_background: bool,
     no_frame: bool,
     vertical_stacking: bool,
     menu_open: bool,
@@ -168,7 +173,7 @@ impl EmoteApp {
             tile_size: 192.0,
             applied_size: Vec2::splat(192.0),
             background_opacity: 100,
-            last_background_opacity: 100,
+            transparent_background: false,
             no_frame: false,
             vertical_stacking: false,
             menu_open: false,
@@ -185,12 +190,12 @@ impl EmoteApp {
         self.background_opacity == 100
     }
 
-    /// Shared by the native app and small embedding examples. No timer or frame
-    /// queue is needed: input and the receiver's request_repaint wake eframe.
+    /// Shared by the native app and small embedding examples. Input and receiver
+    /// notifications wake eframe; only clock mode schedules a one-second repaint.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         // One atomic ordered snapshot; never hold the registry lock during GPU work.
         // Inactive final avatars intentionally use the same cache entry and pixels.
-        let snapshots = self.latest.snapshots();
+        let (snapshots, show_clock) = self.latest.display_snapshot();
         self.textures
             .retain(|key, _| snapshots.iter().any(|snapshot| &snapshot.session_id == key));
         for snapshot in &snapshots {
@@ -236,7 +241,9 @@ impl EmoteApp {
         );
         let partially_opaque = (1..100).contains(&self.background_opacity);
         let unframed = self.no_frame || self.background_opacity < 100;
-        let frame = if count > 1 && !unframed {
+        // The waiting surface has no artwork; every actual opaque avatar may
+        // use the same frame, including the single-avatar case.
+        let frame = if !show_clock && !snapshots.is_empty() && !unframed {
             Some(
                 self.frame_texture
                     .get_or_insert_with(|| load_avatar_frame(ui.ctx())),
@@ -288,7 +295,7 @@ impl EmoteApp {
                     .rect_filled(rect, if partially_opaque { radius } else { 0.0 }, fill);
             }
         }
-        for (index, snapshot) in snapshots.iter().enumerate() {
+        for (index, snapshot) in snapshots.iter().filter(|_| !show_clock).enumerate() {
             let texture = &self.textures[&snapshot.session_id].texture;
             // Divide the full surface into neighboring tiles, preserving the single
             // avatar's fit even while the OS is processing a resize request.
@@ -368,7 +375,17 @@ impl EmoteApp {
                 );
             }
         }
-        if snapshots.is_empty() {
+        if show_clock {
+            let clock = idle_clock_text(chrono::Local::now().fixed_offset());
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                clock,
+                egui::FontId::monospace((rect.width() / 13.0).clamp(8.0, 28.0)),
+                ui.visuals().text_color(),
+            );
+            ui.ctx().request_repaint_after(Duration::from_secs(1));
+        } else if snapshots.is_empty() {
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -427,26 +444,23 @@ impl EmoteApp {
                         }
                     }
                     ui.separator();
-                    let mut transparent = self.background_opacity == 0;
-                    let transparency = ui.checkbox(&mut transparent, "Transparent background");
+                    let transparency =
+                        ui.checkbox(&mut self.transparent_background, "Transparent background");
                     content_width = content_width.max(transparency.rect.width());
                     if transparency.changed() {
-                        self.background_opacity = if transparent {
-                            0
-                        } else {
-                            self.last_background_opacity
-                        };
+                        self.background_opacity = if self.transparent_background { 0 } else { 100 };
                         self.menu_open = false;
                     }
-                    let opacity_label = ui.label("Background opacity");
-                    content_width = content_width.max(opacity_label.rect.width());
-                    let opacity = ui
-                        .add(egui::Slider::new(&mut self.background_opacity, 0..=100).suffix("%"));
-                    content_width = content_width.max(opacity.rect.width());
-                    if opacity.changed() {
-                        if self.background_opacity > 0 {
-                            self.last_background_opacity = self.background_opacity;
-                        }
+                    let label = ui.label("Background transparency");
+                    content_width = content_width.max(label.rect.width());
+                    let mut percentage = 100 - self.background_opacity;
+                    let slider = ui.add_enabled(
+                        self.transparent_background,
+                        egui::Slider::new(&mut percentage, 0..=100).suffix("%"),
+                    );
+                    content_width = content_width.max(slider.rect.width());
+                    if slider.changed() {
+                        self.background_opacity = 100 - percentage;
                         ctx.request_repaint();
                     }
                     let no_frame = ui.checkbox(&mut self.no_frame, "No frame");
@@ -596,7 +610,7 @@ mod tests {
         // The popup needs its first sizing pass before its labels are painted.
         step(ctx, app, vec![]);
         let p = if let Some(fraction) = fraction {
-            menu::slider_position("Background opacity", fraction)
+            menu::slider_position("Background transparency", fraction)
         } else {
             menu::take()
                 .shapes
@@ -619,6 +633,7 @@ mod tests {
         menu::events(vec![button(p, PointerButton::Primary, false)]);
         let output = step(ctx, app, vec![]);
         if fraction.is_some() {
+            assert!(menu::checked(&menu::take(), "Transparent background"));
             menu::events(vec![Event::Key {
                 key: egui::Key::Escape,
                 physical_key: None,
@@ -633,6 +648,16 @@ mod tests {
                 .commands
                 .is_empty(),
             "toggling transparency must not move, resize, or close the window"
+        );
+    }
+
+    #[test]
+    fn idle_clock_uses_local_date_across_utc_midnight() {
+        let utc = chrono::DateTime::parse_from_rfc3339("2026-01-01T01:02:03+00:00").unwrap();
+        let local = utc.with_timezone(&chrono::FixedOffset::west_opt(3 * 3600).unwrap());
+        assert_eq!(
+            idle_clock_text(local),
+            "22:02:03\n31/12/2025\nWaiting Agents..."
         );
     }
 
@@ -662,21 +687,22 @@ mod tests {
             app.native_shadow_enabled(),
             "returning to opaque mode must restore its shadow policy"
         );
+        toggle_background(&ctx, &mut app);
         background_control(&ctx, &mut app, Some(0.5));
         assert!(
             !app.native_shadow_enabled(),
             "partial opacity also disables native shadow"
         );
-        toggle_background(&ctx, &mut app);
-        toggle_background(&ctx, &mut app);
-        assert!(
-            !app.native_shadow_enabled(),
-            "restore the chosen partial opacity, not opaque shadow"
-        );
-        background_control(&ctx, &mut app, Some(1.0));
+        background_control(&ctx, &mut app, Some(0.0));
         assert!(
             app.native_shadow_enabled(),
-            "100 percent restores native opaque shadow policy"
+            "checked at zero is actually opaque"
+        );
+        background_control(&ctx, &mut app, Some(0.5));
+        toggle_background(&ctx, &mut app);
+        assert!(
+            app.native_shadow_enabled(),
+            "unchecking resets partial transparency and restores native shadow"
         );
     }
 }

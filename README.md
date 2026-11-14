@@ -35,8 +35,8 @@ Exact OS error codes and text are host-specific.
 | Start with no sender | Readable waiting message and control hints |
 | Primary-button drag | Ask the OS to move the window |
 | Right-click anywhere | Open a separate options window: per-avatar size 128, 192 (initial), 256, or 384 logical pixels |
-| Right-click → Transparent background | Set the background to 0%; uncheck to restore its last nonzero opacity |
-| Right-click → Background opacity | Adjust background-only opacity from 0–100%; initially 100%, for this session only |
+| Right-click → Transparent background | Enable the slider, initially at 100% transparency; uncheck to reset to opaque (0%) and disable the slider |
+| Right-click → Background transparency | While checked, adjust background-only transparency: 0% opaque, 100% invisible; for this session only |
 | Right-click → No frame | Hide decorative frames and leave transparent 5 px separators; preserve the remaining background; unchecked by default, for this session only |
 | Right-click → Vertical / Horizontal | Select Vertical or Horizontal stacking; Horizontal is initial, for this session only |
 | Right-click → Exit | Close the window and shut down the owned receiver |
@@ -50,7 +50,7 @@ and focus behavior depend on the window manager/compositor.
 
 Each avatar occupies a square tile. **Horizontal** uses a row with width
 `avatar count × chosen size` and height `chosen size`; **Vertical** uses a column
-with width `chosen size` and height `avatar count × chosen size`. With multiple avatars and
+with width `chosen size` and height `avatar count × chosen size`. With one or more avatars,
 an opaque background and **No frame** unchecked, each tile uses the supplied [cyberpunk PNG frame](assets/README.md)
 instead of a beveled border. The complete avatar and labels fit within its clear
 opening; one embedded texture is reused across tiles with nearest-neighbor sampling.
@@ -66,10 +66,14 @@ separator strips are **always transparent**, even with an opaque background
 behind the avatars. Cards use **8 logical pixel rounded corners**, including
 the edges next to separators. The background and image draw mesh share that
 outline, so opaque PNG corners cannot cover it. Cached PNG pixels and label
-layout are unchanged. Window dimensions and single-avatar geometry stay unchanged. Transparency always hides frames, independently of that
+layout are unchanged. Window dimensions stay unchanged. A framed single avatar
+uses the same clear-opening inset as a framed multi-avatar tile; **No frame**
+retains its original borderless fit. Nonzero transparency hides frames, independently of that
 checkbox; changing transparency does not reset the **No frame** selection.
-The checkboxes, background opacity and stacking selection reset on restart. A single avatar keeps its original
-borderless layout. Startup waits in one
+The checkboxes, background transparency and stacking selection reset on restart.
+A single avatar now shows its frame by default, at 0% transparency with **No frame**
+unchecked. The waiting surface has no decorative frame before an image arrives.
+Startup waits in one
 192-pixel square. Physical dimensions also follow the OS display scale. Many
 sessions can exceed the monitor's width or height; scrolling, wrapping, and other
 overflow policies are outside this change. The desktop adds black top padding
@@ -77,11 +81,14 @@ equivalent to five source rows,
 balancing the sender image's existing five-row black bottom gap. The complete
 64×64 image is uniformly fitted within a virtual 64×69 composition, centered in
 each tile without cropping or changing the PNG. Nearest-neighbor filtering
-keeps texel edges sharp. The background is **opaque black by default**. **Background opacity** adjusts
-only that background from 0–100%; images, embedded labels and the options menu
-are not faded. Intermediate opacity retains the 8-pixel rounded background
-and image contour, including with a single avatar. The **Transparent background** checkbox is a 0% shortcut;
-unchecking it restores the last nonzero slider value. Any opacity below 100%
+keeps texel edges sharp. The background is **opaque black by default**, with
+**Transparent background** unchecked and its slider disabled at 0% transparency.
+Checking it enables **Background transparency**, initially at 100% (invisible).
+The slider changes only the background; images, embedded labels and the options
+menu are not faded. Intermediate transparency retains the 8-pixel rounded background
+and image contour, including with a single avatar. The checkbox stays checked
+at 0% and partial values. Unchecking resets to 0% transparency (fully opaque),
+not a remembered partial value. Any opacity below 100%
 automatically omits the frame and uses the compact layout with 5-pixel clear
 gaps, without changing the saved **No frame** preference for fully opaque mode.
 PNG alpha blends over the desktop subject to native compositor support. Original image pixels are not changed: opaque black
@@ -98,8 +105,13 @@ service, installer, or automatic sender configuration.
 Session-aware frames use `X-Emote-Session-Id` plus stream/sequence headers on the
 existing version-1 PNG endpoint. Distinct sessions appear in stable first-seen
 order; updates affect only their own tile. Closing or timing out a session removes
-its tile while others remain. The last removed avatar retains its image until a
-new or reactivated session replaces it. Senders heartbeat every 5 seconds; accepted
+its tile while others remain. Explicitly closing the last active session, with
+no legacy avatar present, immediately replaces its display with a clock labelled
+local `HH:MM:SS`, the date `DD/MM/YYYY`, and `Waiting Agents...` on separate
+lines, refreshed once per second. A new or reactivated session replaces
+the clock; drag and options remain available. Startup still shows Waiting, and
+timeout of the last session still retains its image (a delayed close after timeout
+does not enable the clock). Senders heartbeat every 5 seconds; accepted
 frames/heartbeats renew a 30-second lease. Heartbeats never upload image pixels.
 Legacy frames without a session ID still update one nonexpiring singleton avatar,
 which can coexist with session-aware tiles. See the [protocol](docs/protocol.md)
@@ -122,8 +134,8 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite contains **48 tests** (19 receiver, 4 session lifecycle,
-24 headless window, and 1 private shadow-policy unit test). The earlier popup
+The default suite contains **49 tests** (19 receiver, 4 session lifecycle,
+25 headless window, and 1 private shadow-policy unit test). The earlier popup
 update passed its 14 window tests, the shadow policy, and all 4 lifecycle tests.
 The frame update adds alpha/artwork checks and replaces the bevel geometry
 checks with frame-opening, texture reuse, and transparent/single-avatar checks. The

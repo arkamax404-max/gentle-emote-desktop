@@ -43,6 +43,12 @@ impl LatestFrame {
         self.0.lock().expect("frame lock poisoned").latest()
     }
 
+    /// Read presentation state atomically, without holding the lock during rendering.
+    pub(crate) fn display_snapshot(&self) -> (Vec<SessionSnapshot>, bool) {
+        let registry = self.0.lock().expect("frame lock poisoned");
+        (registry.snapshots(), registry.show_clock())
+    }
+
     /// Active avatars in stable first-seen order, or the retained final avatar.
     /// Pixel Arcs remain valid across publication, expiry, and shutdown.
     pub fn snapshots(&self) -> Vec<SessionSnapshot> {

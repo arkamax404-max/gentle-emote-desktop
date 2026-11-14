@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }

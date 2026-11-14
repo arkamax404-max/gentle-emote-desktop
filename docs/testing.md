@@ -21,13 +21,13 @@ If Cargo is not on PATH on the development host, substitute
 `/Users/santiagoperez/.cargo/bin/cargo` for `cargo`. These instructions do not
 install tools, modify PATH, or change sender configuration.
 
-The current suite contains **48 non-ignored tests: 19 receiver, 4 session lifecycle,
-24 window, and 1 private shadow-policy unit test**. The earlier frame/compact-popup checks
+The current suite contains **49 non-ignored tests: 19 receiver, 4 session lifecycle,
+25 window, and 1 private shadow-policy unit test**. The earlier frame/compact-popup checks
 passed all 15 then-existing window tests and the shadow policy; the earlier lifecycle check
 passed 4/4. The most recent full-suite attempt failed one receiver test with
 Windows OS 10053; it was not rerun for this UI update. See the evidence below.
 On macOS, Cargo also lists one ignored native startup test; it is not part of
-those 48. On other platforms,
+those 49. On other platforms,
 that startup test is excluded by a target guard.
 A headless suite needs no running GUI, but still compiles native dependencies;
 Linux builds need suitable graphics/toolchain libraries.
@@ -35,7 +35,7 @@ Linux builds need suitable graphics/toolchain libraries.
 | Test file | What its passing tests establish |
 | --- | --- |
 | [`tests/receiver.rs`](../tests/receiver.rs), 19 | Real TCP/HTTP validation, exact status/body assertions, rejection preserving snapshot and notification count, byte/deadline/connection bounds, PNG normalization, publication ordering, snapshots, bind failures, and owned shutdown; includes three response-reader guards |
-| [`tests/window.rs`](../tests/window.rs), 24 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry, no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
+| [`tests/window.rs`](../tests/window.rs), 25 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry, no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
 | [`tests/sessions.rs`](../tests/sessions.rs), 4 | Deterministic registry lease/expiry, reactivation, isolation, retention, ordering, legacy compatibility, caps, and finite replay horizon |
 | [`src/app.rs`](../src/app.rs), 1 | Checkbox-driven opaque → transparent → opaque shadow policy; no native window or compositor is exercised |
 | [`tests/startup.rs`](../tests/startup.rs), 1 ignored on macOS | An explicitly launched production process reports an occupied fixed port and terminates as expected on that host |
@@ -223,7 +223,61 @@ format, offline all-target Clippy with warnings denied, and offline native build
 No full receiver suite or native review retry was performed. Human visual
 acceptance of this corrected eight-pixel complete contour is still pending.
 
-### Automatic unframed transparency and background opacity
+### Independent transparency control (current behavior)
+
+**Transparent background** is unchecked by default. **Background transparency**
+is disabled at 0% (opaque) until checked; checking initially selects 100%
+(invisible). Checked-at-zero and partial values keep the checkbox checked.
+Unchecking always resets to opaque 0% and disables the slider, not a remembered
+partial percentage. Only background paint fades. Actual opacity controls frames
+and native shadow; checked-at-zero may still show the frame when **No frame**
+is unchecked, now including a single avatar (see the follow-up below).
+
+`transparency_checkbox_gates_slider_and_restores_opaque_frame_choice` drives the
+actual immediate native-child menu with two session avatars, including disabled
+track clicks and real track values 0/50/100, checked-state paint, exact displayed
+percentages, opaque menu paint, white avatar colors, texture reuse and both
+No frame preferences. Existing tests retain contour, five-point separator,
+orientation, dimensions, PNG and single-avatar coverage. The pre-fix public-UI
+endpoint probe failed the newly required zero-transparency opaque-frame assertion
+(0 frames versus 2). That RED established the old opacity/transparency mismatch,
+not the exact numeric cause of the reported 2% floor. The corrected UI displays
+exact 0/50/100% values after actual track clicks. Its first two post-change runs
+failed because the fixture expected a combined percentage text shape; egui paints
+the number and `%` separately. Correcting that observation passed the focused
+regression and all 24 window tests, plus the shadow-policy test, formatting,
+offline all-target Clippy with warnings denied and offline build. The reported
+native 2% floor was not independently reproduced; passing headless endpoints do
+not prove all native pointer/DPI behavior. Human compositor checks remain
+outstanding. The historical receiver failure was not rerun.
+
+The following section records the superseded opacity-slider milestone; its
+remembered-percentage behavior is no longer current.
+
+### Single-avatar frame activation (current follow-up)
+
+The human explicitly superseded the earlier borderless-single-avatar rule.
+An actual single avatar now uses the same decorative frame and clear-opening
+composition as a multi-avatar tile whenever transparency is 0% and **No frame**
+is unchecked, including at startup defaults. Checking **No frame** retains the
+old full-surface single-avatar fit. Positive transparency omits the artwork;
+unchecking transparency restores the frame unless **No frame** remains checked.
+The empty waiting surface neither paints nor uploads the decorative frame.
+Native root dimensions, opacity/shadow policy and source textures are unchanged.
+Earlier milestone references to borderless single avatars are historical.
+
+`single_avatar_frame_follows_opaque_no_frame_and_transparency_controls` drives
+real child-menu checkboxes and exact displayed 0/50/100% slider values with both
+No frame preferences, including disabled clicks after opaque reset. It checks
+frame texture identity/nearest filtering, white mesh colors, unchanged uploads,
+opaque/partial/clear paint, no root commands and the original No frame fit.
+RED failed with zero frames instead of one before the count gate was changed;
+GREEN then passed. Existing removal/texture-reuse tests now expect an opaque
+single avatar's frame to survive removal of its neighbor. The original full-UV
+composition test explicitly selects **No frame** instead of weakening its fit
+assertions. Native visual acceptance remains separate from these headless checks.
+
+### Automatic unframed transparency and background opacity (historical)
 
 Any background percentage below 100 automatically omits decorative frames and
 uses the compact five-pixel layout, regardless of the opaque-mode No frame
@@ -343,6 +397,22 @@ the same snapshots for expiry and close. These checks do not prove human native
 visual behavior or replace an independent concurrency verifier. The existing
 receiver transport helper can intermittently reject Windows ConnectionAborted
 (OS 10053); that known base failure was not observed in this T3 full-suite run.
+
+## Final-close clock regression
+
+`sole_avatar_close_immediately_shows_clock_and_new_avatar_replaces_it` checks
+initial Waiting, a live sole avatar, immediate final-close clock text formatted
+as local `HH:MM:SS`, `DD/MM/YYYY`, and `Waiting Agents...` on separate lines,
+omitted avatar/frame meshes, one-second repaint scheduling and
+replacement by a new session through HTTP and headless egui. The neighboring
+session regression still checks unaffected remaining avatars and cached texture
+ownership until replacement. Deterministic registry checks cover final close,
+remaining active sessions, timeout retention, delayed close after timeout,
+reactivation, legacy suppression and unchanged compatibility snapshots/latest.
+The clock uses Chrono's system local time zone. A fixed-offset formatter test
+covers local date rollover across UTC midnight without changing the process time zone.
+These regressions do not establish native visual acceptance. Current execution
+results are reported separately; earlier milestone results above are historical.
 
 ## Understand the test-only TCP reset correction
 
@@ -493,8 +563,13 @@ Use this checklist to gather missing evidence, not as a record of completed work
   Record sender version, supported per-run option used, and observed outcome.
 - [ ] Send two session-aware avatars and confirm neighboring tiles stay in stable
   order, update independently, and resize together at each per-avatar menu size.
-  Close or let one expire and check the other remains; close the last and check
-  its image remains until a new session replaces it. Verify legacy singleton
+  Close or let one expire and check the other remains. Explicitly close the last
+  active session with no legacy avatar and check an immediate local `HH:MM:SS` clock
+  with `DD/MM/YYYY` and `Waiting Agents...` on separate lines,
+  advancing each second, with no avatar or decorative frame. Check drag/options
+  still work and a new session replaces the clock. Separately let the final
+  session time out: its image must remain, even if a delayed close then arrives.
+  Verify legacy singleton
   traffic still renders. Many sessions may exceed monitor width; no overflow
   handling is promised. These multi-avatar native checks have not been performed.
 - [ ] With another ordinary window overlapping, visually check always-on-top

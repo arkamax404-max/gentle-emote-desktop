@@ -155,6 +155,95 @@ fn bounded_active_and_inactive_identities_and_finite_replay_horizon() {
 }
 
 #[test]
+fn clock_requires_final_active_close_and_new_frames_restore_avatars() {
+    let mut r = SessionRegistry::default();
+    let now = Instant::now();
+    assert!(!r.show_clock());
+    assert!(r.snapshots().is_empty());
+    assert!(!r.apply("unknown", "s", 1, Event::Close, now).unwrap());
+    assert!(!r.show_clock());
+    r.apply("a", "s", 1, frame(1), now).unwrap();
+    r.apply("b", "s", 1, frame(2), now).unwrap();
+    let latest = r.latest().unwrap();
+    assert!(r.apply("a", "s", 2, Event::Close, now).unwrap());
+    assert!(!r.show_clock());
+    assert_eq!(r.snapshots().len(), 1);
+    assert_eq!(r.snapshots()[0].session_id.as_deref(), Some("b"));
+    assert!(r.snapshots()[0].active);
+    assert!(r.apply("b", "s", 2, Event::Close, now).unwrap());
+    assert!(r.show_clock());
+    assert!(!r.snapshots()[0].active);
+    assert!(Arc::ptr_eq(&latest, &r.snapshots()[0].frame));
+    assert!(Arc::ptr_eq(&latest, &r.latest().unwrap()));
+    assert!(!r.apply("b", "s", 3, Event::Close, now).unwrap());
+    assert!(!r.apply("b", "s", 4, frame(3), now).unwrap());
+    assert!(r.show_clock());
+    assert!(!r.expire(now + SESSION_TIMEOUT));
+    assert!(r.show_clock());
+    r.apply("b", "new", 0, frame(4), now).unwrap();
+    assert!(!r.show_clock());
+    assert!(r.snapshots()[0].active);
+    assert_eq!(r.snapshots()[0].frame.rgba[0], 4);
+}
+
+#[test]
+fn timeout_and_delayed_close_keep_retained_avatar_not_clock() {
+    let mut r = SessionRegistry::default();
+    let now = Instant::now();
+    r.apply("a", "s", 1, frame(1), now).unwrap();
+    let saved = r.latest().unwrap();
+    assert!(r.expire(now + SESSION_TIMEOUT));
+    assert!(!r.show_clock());
+    assert!(!r.snapshots()[0].active);
+    assert!(Arc::ptr_eq(&saved, &r.snapshots()[0].frame));
+    assert!(
+        !r.apply("a", "s", 2, Event::Close, now + SESSION_TIMEOUT)
+            .unwrap()
+    );
+    assert!(!r.show_clock());
+    assert!(Arc::ptr_eq(&saved, &r.latest().unwrap()));
+    assert!(Arc::ptr_eq(&saved, &r.snapshots()[0].frame));
+    r.apply("b", "s", 1, frame(2), now + SESSION_TIMEOUT)
+        .unwrap();
+    r.apply("b", "s", 2, Event::Close, now + SESSION_TIMEOUT)
+        .unwrap();
+    assert!(r.show_clock());
+    // A heartbeat can reactivate an expired, non-closed stream with its old pixels.
+    r.apply("c", "s", 1, frame(3), now).unwrap();
+    assert!(!r.show_clock());
+    assert!(r.expire(now + SESSION_TIMEOUT));
+    assert!(!r.show_clock());
+    assert!(
+        r.apply("c", "s", 2, Event::Heartbeat, now + SESSION_TIMEOUT)
+            .unwrap()
+    );
+    assert!(!r.show_clock());
+    assert!(r.snapshots()[0].active);
+}
+
+#[test]
+fn legacy_publication_suppresses_clock_and_legacy_prevents_final_close_clock() {
+    let mut r = SessionRegistry::default();
+    let now = Instant::now();
+    r.apply("a", "s", 1, frame(1), now).unwrap();
+    r.apply("a", "s", 2, Event::Close, now).unwrap();
+    assert!(r.show_clock());
+    let legacy = Arc::new(Frame {
+        rgba: vec![9; 16384],
+    });
+    r.publish_legacy(legacy.clone());
+    assert!(!r.show_clock());
+    r.apply("b", "s", 1, frame(2), now).unwrap();
+    assert!(r.apply("b", "s", 2, Event::Close, now).unwrap());
+    assert!(!r.show_clock());
+    assert_eq!(r.snapshots().len(), 1);
+    assert!(r.snapshots()[0].session_id.is_none());
+    assert!(Arc::ptr_eq(&legacy, &r.snapshots()[0].frame));
+    assert!(!r.expire(now + SESSION_TIMEOUT));
+    assert!(!r.show_clock());
+}
+
+#[test]
 fn legacy_slot_and_pixel_snapshots_remain_compatible() {
     let mut r = SessionRegistry::default();
     assert!(r.latest().is_none());

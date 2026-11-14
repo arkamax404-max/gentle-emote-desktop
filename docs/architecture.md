@@ -17,14 +17,17 @@ Receiver worker: Hyper → request policy → bounded body → PNG decode
 LatestFrame: shared mutex-protected bounded SessionRegistry
     │ release lock, then request_repaint() for visible changes
     ▼
-Main/native event loop: EmoteApp::show → ordered snapshots()
+Main/native event loop: EmoteApp::show → atomic display_snapshot()
     │ per-key new Arc identity? upload/update texture; otherwise reuse it
     ▼
 egui + Glow → frameless native window; opaque black by default, optional transparency
 ```
 
-There is no pending-frame queue, GUI polling timer, persistence layer, or second
-metadata display. Sender labels are already part of the pixels. The
+There is no pending-frame queue, avatar polling timer, persistence layer, or second
+metadata display. Sender labels are already part of the pixels. Only clock mode
+schedules a one-second GUI repaint, reading `chrono::Local::now()` once for local
+`HH:MM:SS` and `DD/MM/YYYY`, followed by `Waiting Agents...`. Chrono uses the
+system time zone, including daylight-saving rules. The
 [protocol guide](protocol.md) is the reference for headers, response bodies,
 validation order, resource limits, and the local trust boundary.
 
@@ -99,13 +102,19 @@ frame publication, stream ordering, heartbeat leases, close, and expiry. Its
 | `active: bool` | Active avatar, or the inactive final image retained when none remain |
 
 Active avatars appear in stable first-seen order. When none remain, the final
-removed avatar stays visible; a new or reactivated session replaces it, rather
-than appending to a dead placeholder. Legacy traffic is a nonexpiring singleton
+removed avatar remains in compatibility snapshots. Timeout keeps it visible;
+explicit close of the final active session instead displays the local clock when
+no legacy avatar remains. Initial Waiting and a delayed close after timeout do
+not enable the clock. A new or reactivated session replaces either presentation,
+rather than appending to a dead placeholder. Legacy traffic is a nonexpiring singleton
 ordered before session keys. The GUI uses registry ordering, never HashMap order.
 
 `LatestFrame::get()` remains a compatibility API returning the last accepted image
 from any session (initially `None`), unaffected by lifecycle-only traffic. Both
 APIs release the mutex before the caller converts pixels, uploads, or paints.
+The app's crate-private `display_snapshot()` reads snapshots and the registry's
+`show_clock()` flag together under that same lock. Clock mode retains cached
+textures but paints neither avatar nor frame; drag and options stay available.
 Pixel Arcs remain readable after replacement and shutdown.
 
 Repaint callbacks run outside the lock after image publication or visible lifecycle
@@ -173,15 +182,20 @@ popup clipped to a small avatar. Native focus/placement still needs OS checks.
 The row or column may exceed monitor dimensions; no wrapping, scrolling, or overflow policy is
 provided. `EmoteApp::clear_color` clears to transparent RGBA;
 `show` paints an opaque black surface by default. A private integer percentage
-starts at 100; **Background opacity** adjusts it from 0 to 100 without tinting
-image meshes or changing cached pixels. Black underlay alpha is the percentage
-scaled and rounded to 0–255. The **Transparent background** checkbox selects 0;
-unchecking restores the last nonzero percentage, initially 100. The percentage
-and its restore value live only in the app instance and reset on restart.
+starts at 100 (opaque). The independent **Transparent background** flag starts
+false, disabling **Background transparency** at 0%. Checking it initially selects
+100% transparency; the enabled slider converts transparency to opacity as
+`100 - transparency`, without tinting image meshes or changing cached pixels.
+Black underlay alpha is opacity scaled and rounded to 0–255. Zero or partial
+transparency does not uncheck the flag. Unchecking forces opacity to 100 and
+disables the slider at 0% transparency; no previous percentage is restored.
+Both values live only in the app instance and reset on restart. Frame and native
+shadow policy use actual opacity, not the flag, so checked-at-zero remains opaque.
 The options viewport remains opaque. At intermediate percentages, a single
 avatar's underlay and image mesh share the existing eight-point rounded contour,
-without relying on the Windows shadow. Fully opaque/clear single-avatar paths
-retain their original fit; stacked-card contours and spacing are unchanged.
+without relying on the Windows shadow. Fully clear single avatars and opaque
+single avatars with **No frame** checked retain their original fit; framed single
+avatars use the existing artwork opening. Stacked-card contours and spacing are unchanged.
 No click-through is enabled.
 
 Both modes use the same texture and full image UVs. The complete 64×64 image is
@@ -189,21 +203,23 @@ uniformly fitted within each tile into a centered virtual 64×69 composition, wi
 five source rows of padding above it. That added padding becomes transparent when enabled; opaque
 black pixels already in the PNG, including the sender's five-row bottom gap,
 remain black. No color-keying, cropping, or pixel rewriting occurs, and toggling
-the background does not require re-uploading an unchanged frame. Multiple opaque
-tiles use the embedded `assets/avatar-frame.png` in place of the former bevel
+the background does not require re-uploading an unchanged frame. All opaque
+avatar tiles, including a single avatar, use the embedded `assets/avatar-frame.png`
 unless **No frame** is checked.
 One lazily loaded shared texture holds the cropped RGBA artwork. Its 851 × 851
 clear opening contains the complete virtual composition; the frame is painted
 above the avatar without covering labels. Uniform fitting preserves the frame's
 aspect ratio even during narrow transient resizes. Any background opacity below
 100 automatically uses the compact unframed layout, without modifying the
-independent **No frame** preference for opaque mode. A single avatar keeps the
-original borderless fit. See the
+independent **No frame** preference for opaque mode. The frame is loaded only
+when an actual avatar needs it, never for the empty waiting surface. A single
+avatar uses the same frame/opening composition as each multi-avatar tile; checking
+**No frame** restores its original borderless fit. See the
 [asset preparation contract](../assets/README.md).
 
 The independent **No frame** checkbox starts unchecked and resets on restart.
-When checked, or whenever background opacity is below 100%, multiple avatars
-omit the artwork. Five logical pixels are reserved between card contours, then
+When checked, or whenever background opacity is below 100%, all avatars
+omit the artwork. For multiple avatars, five logical pixels are reserved between card contours, then
 the remaining extent is divided into equal card regions along the selected axis.
 Each card independently fits the original 64-by-69 composition inside a four-point
 inset, including the five-source-row top compensation; there is no global image
@@ -221,7 +237,7 @@ derived from that unchanged rectangle. Rounding only the background is not
 sufficient: opaque image corners can otherwise paint over the lower cutouts.
 The draw mesh, not the cached texture, is clipped in both orientations, including
 when the remaining background is fully transparent. It does not change the
-background setting, root window dimensions or the single-avatar fit. During transient
+background setting, root window dimensions or the unframed single-avatar fit. During transient
 surfaces too narrow for the gaps, spacing is clamped rather than creating
 negative image sizes. Toggling either presentation option reuses cached textures.
 

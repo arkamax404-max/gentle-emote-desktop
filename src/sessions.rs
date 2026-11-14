@@ -48,10 +48,17 @@ pub struct SessionRegistry {
     legacy: Option<Arc<Frame>>,
     latest: Option<Arc<Frame>>,
     retained: Option<SessionSnapshot>,
+    clock_after_close: bool,
 }
 impl SessionRegistry {
     pub fn latest(&self) -> Option<Arc<Frame>> {
         self.latest.clone()
+    }
+
+    /// Presentation switches to a clock only after the final active avatar closes.
+    /// Compatibility snapshots and the latest image remain retained independently.
+    pub fn show_clock(&self) -> bool {
+        self.clock_after_close
     }
 
     pub fn snapshots(&self) -> Vec<SessionSnapshot> {
@@ -83,6 +90,7 @@ impl SessionRegistry {
         self.latest = Some(frame.clone());
         self.legacy = Some(frame);
         self.retained = None;
+        self.clock_after_close = false;
     }
 
     /// Returns whether visible snapshots changed. Stale, closed and unknown metadata
@@ -169,6 +177,7 @@ impl SessionRegistry {
         s.active = activates;
         s.closed = !activates;
         if activates {
+            self.clock_after_close = false;
             self.retained = None;
         } else if changed {
             self.retained = Some(SessionSnapshot {
@@ -176,6 +185,10 @@ impl SessionRegistry {
                 frame: s.frame.clone(),
                 active: false,
             });
+        }
+        if !activates && changed {
+            self.clock_after_close =
+                self.legacy.is_none() && !self.sessions.iter().any(|s| s.active);
         }
         Ok(changed)
     }
@@ -193,6 +206,9 @@ impl SessionRegistry {
                 });
                 changed = true;
             }
+        }
+        if changed {
+            self.clock_after_close = false;
         }
         changed
     }

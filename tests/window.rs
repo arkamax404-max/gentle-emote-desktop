@@ -194,8 +194,22 @@ fn supplied_frame_derivative_has_real_alpha_and_preserves_neon_artwork() {
 }
 
 fn set_background_opacity(ctx: &egui::Context, app: &mut EmoteApp, fraction: f32) {
-    select_menu_option(ctx, app, "Background opacity");
-    let point = menu::slider_position("Background opacity", fraction);
+    select_menu_option(ctx, app, "Background transparency");
+    let enabled = menu::checked(&menu::take(), "Transparent background");
+    if !enabled {
+        toggle_background(ctx, app);
+    }
+    set_background_transparency(ctx, app, 1.0 - fraction, true);
+}
+
+fn set_background_transparency(
+    ctx: &egui::Context,
+    app: &mut EmoteApp,
+    fraction: f32,
+    checked: bool,
+) {
+    select_menu_option(ctx, app, "Background transparency");
+    let point = menu::slider_position("Background transparency", fraction);
     menu::events(vec![
         Event::PointerMoved(point),
         button(point, PointerButton::Primary, true),
@@ -204,6 +218,22 @@ fn set_background_opacity(ctx: &egui::Context, app: &mut EmoteApp, fraction: f32
     menu::events(vec![button(point, PointerButton::Primary, false)]);
     step(ctx, app, vec![]);
     let child = menu::take();
+    assert_eq!(menu::checked(&child, "Transparent background"), checked);
+    let percentage = if checked {
+        (fraction * 100.0).round() as u8
+    } else {
+        0
+    };
+    for text in [percentage.to_string(), "%".to_owned()] {
+        assert!(
+            child
+                .shapes
+                .iter()
+                .any(|s| matches!(&s.shape, egui::Shape::Text(t)
+            if t.galley.text() == text)),
+            "slider must display exact {percentage}%"
+        );
+    }
     assert!(
         child
             .shapes
@@ -401,7 +431,100 @@ fn partial_opacity_preserves_single_avatar_rounded_contour() {
 }
 
 #[test]
-fn background_opacity_controls_only_underlay_and_restores_percentage() {
+fn single_avatar_frame_follows_opaque_no_frame_and_transparency_controls() {
+    let (ctx, mut app, address) = setup();
+    let waiting = step(&ctx, &mut app, vec![]);
+    assert!(frames(&waiting).is_empty());
+    assert!(
+        waiting
+            .textures_delta
+            .set
+            .values()
+            .flatten()
+            .all(|d| d.image.size() != [1100, 1092])
+    );
+    drop(waiting);
+    session_request(address, "a", 1, "emote", 42);
+    let initial = step(&ctx, &mut app, vec![]);
+    assert_eq!(
+        frames(&initial).len(),
+        1,
+        "an opaque single avatar must have its frame"
+    );
+    let frame_id = frames(&initial)[0].0;
+    let avatar_id = avatars(&initial)[0].0;
+    let framed_bounds = avatars(&initial)[0].1;
+    assert_eq!(
+        initial.textures_delta.set[&frame_id]
+            .last()
+            .unwrap()
+            .options,
+        egui::TextureOptions::NEAREST
+    );
+    drop(initial);
+
+    for no_frame in [true, false] {
+        toggle_option(&ctx, &mut app, "No frame");
+        let opaque = step(&ctx, &mut app, vec![]);
+        assert_eq!(frames(&opaque).len(), usize::from(!no_frame));
+        if no_frame {
+            let scale = 192.0 / 69.0;
+            assert!(
+                (avatars(&opaque)[0].1.width() - 64.0 * scale).abs() < 0.001,
+                "No frame retains the original full-surface single-avatar fit"
+            );
+        } else {
+            assert_eq!(avatars(&opaque)[0].1, framed_bounds);
+        }
+        drop(opaque);
+        toggle_background(&ctx, &mut app);
+        for percentage in [0.0, 0.5, 1.0] {
+            set_background_transparency(&ctx, &mut app, percentage, true);
+            let output = step(&ctx, &mut app, vec![]);
+            assert_eq!(
+                frames(&output).len(),
+                usize::from(percentage == 0.0 && !no_frame)
+            );
+            assert_eq!(avatars(&output)[0].0, avatar_id);
+            assert!(output.textures_delta.set.is_empty());
+            assert!(
+                output.viewport_output[&egui::ViewportId::ROOT]
+                    .commands
+                    .is_empty()
+            );
+            assert!(output.shapes.iter().all(|s| {
+                match &s.shape {
+                    egui::Shape::Mesh(mesh) => mesh
+                        .vertices
+                        .iter()
+                        .all(|v| v.color == egui::Color32::WHITE),
+                    _ => true,
+                }
+            }));
+            let alpha = if percentage == 0.0 { 255 } else { 128 };
+            assert_eq!(
+                output.shapes.iter().any(|s| matches!(&s.shape,
+                egui::Shape::Rect(r) if r.fill.a() == alpha)),
+                percentage != 1.0
+            );
+        }
+        toggle_background(&ctx, &mut app);
+        set_background_transparency(&ctx, &mut app, 0.5, false);
+        let restored = step(&ctx, &mut app, vec![]);
+        assert_eq!(
+            frames(&restored)
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            if no_frame { vec![] } else { vec![frame_id] }
+        );
+        assert!(has_black_background(&restored));
+        assert!(restored.textures_delta.set.is_empty());
+    }
+}
+
+#[test]
+fn transparency_checkbox_gates_slider_and_restores_opaque_frame_choice() {
     let (ctx, mut app, address) = setup();
     session_request(address, "a", 1, "emote", 42);
     session_request(address, "b", 1, "emote", 84);
@@ -409,7 +532,28 @@ fn background_opacity_controls_only_underlay_and_restores_percentage() {
     let frame_id = frames(&initial)[0].0;
     let images: Vec<_> = avatars(&initial).iter().map(|(id, _)| *id).collect();
     drop(initial);
-    set_background_opacity(&ctx, &mut app, 0.5);
+    set_background_transparency(&ctx, &mut app, 0.5, false);
+    let disabled = wide_step(&ctx, &mut app, 384.0);
+    assert_eq!(frames(&disabled).len(), 2);
+    assert!(
+        disabled
+            .shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill.a() == 255))
+    );
+    assert!(disabled.textures_delta.set.is_empty());
+    drop(disabled);
+    // Exercise the real track endpoint before checking partial values.
+    toggle_background(&ctx, &mut app);
+    set_background_transparency(&ctx, &mut app, 0.0, true);
+    let endpoint = wide_step(&ctx, &mut app, 384.0);
+    assert_eq!(
+        frames(&endpoint).len(),
+        2,
+        "0% transparency must be opaque even while checked"
+    );
+    drop(endpoint);
+    set_background_transparency(&ctx, &mut app, 0.5, true);
     let half = wide_step(&ctx, &mut app, 384.0);
     let fill: Vec<_> = half
         .shapes
@@ -445,7 +589,7 @@ fn background_opacity_controls_only_underlay_and_restores_percentage() {
     );
     assert!(half.textures_delta.set.is_empty());
     drop(half);
-    set_background_opacity(&ctx, &mut app, 0.0);
+    set_background_transparency(&ctx, &mut app, 1.0, true);
     let clear = wide_step(&ctx, &mut app, 384.0);
     assert!(
         !clear
@@ -461,11 +605,11 @@ fn background_opacity_controls_only_underlay_and_restores_percentage() {
         restored
             .shapes
             .iter()
-            .any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.fill.a()==128)),
-        "unchecking full transparency restores the last nonzero slider value"
+            .any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.fill.a()==255)),
+        "unchecking transparency forces opaque rather than restoring a partial value"
     );
     drop(restored);
-    set_background_opacity(&ctx, &mut app, 1.0);
+    set_background_transparency(&ctx, &mut app, 1.0, false);
     let opaque = wide_step(&ctx, &mut app, 384.0);
     assert_eq!(
         frames(&opaque)
@@ -475,6 +619,25 @@ fn background_opacity_controls_only_underlay_and_restores_percentage() {
         vec![frame_id; 2]
     );
     assert!(opaque.textures_delta.set.is_empty());
+    drop(opaque);
+    toggle_option(&ctx, &mut app, "No frame");
+    toggle_background(&ctx, &mut app);
+    set_background_transparency(&ctx, &mut app, 0.5, true);
+    toggle_background(&ctx, &mut app);
+    set_background_transparency(&ctx, &mut app, 0.5, false);
+    let unframed = wide_step(&ctx, &mut app, 384.0);
+    assert!(frames(&unframed).is_empty());
+    let cards: Vec<_> = unframed
+        .shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::Shape::Rect(r) if r.fill.a() == 255 => Some(r.rect),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cards.len(), 2);
+    assert!((cards[1].left() - cards[0].right() - 5.0).abs() < 0.001);
+    assert!(unframed.textures_delta.set.is_empty());
 }
 
 #[test]
@@ -587,10 +750,8 @@ fn multi_avatar_png_frames_preserve_transparency_single_fit_and_labels() {
             toggle_background(&ctx, &mut app);
         }
         let single = step(&ctx, &mut app, vec![]);
-        assert!(
-            frames(&single).is_empty(),
-            "a single avatar remains borderless"
-        );
+        assert_eq!(frames(&single).len(), usize::from(!transparent));
+        let single_frame = frames(&single).first().map(|(id, _)| *id);
         let original_bounds = avatars(&single)[0].1;
         drop(single);
         session_request(address, "b", 1, "emote", 84);
@@ -606,8 +767,11 @@ fn multi_avatar_png_frames_preserve_transparency_single_fit_and_labels() {
                 borders[0].0, borders[1].0,
                 "upload one shared frame texture"
             );
-            let delta = first.textures_delta.set[&borders[0].0].last().unwrap();
-            assert_eq!(delta.options, egui::TextureOptions::NEAREST);
+            assert_eq!(Some(borders[0].0), single_frame);
+            assert!(
+                !first.textures_delta.set.contains_key(&borders[0].0),
+                "adding a second avatar reuses the single avatar's frame texture"
+            );
         }
         drop(first);
         for size in [128.0, 192.0, 256.0, 384.0] {
@@ -681,9 +845,10 @@ fn multi_avatar_png_frames_preserve_transparency_single_fit_and_labels() {
         }
         session_request(address, "b", 2, "emote/close", 0);
         let remaining = step(&ctx, &mut app, vec![]);
-        assert!(
-            frames(&remaining).is_empty(),
-            "remove the frame with the second avatar"
+        assert_eq!(
+            frames(&remaining).len(),
+            usize::from(!transparent),
+            "removing the second avatar preserves the remaining avatar's frame policy"
         );
         assert_eq!(
             avatars(&remaining)[0].1,
@@ -1008,9 +1173,12 @@ fn no_frame_keeps_five_logical_pixels_between_adjacent_cards() {
 fn no_frame_toggle_is_independent_of_transparency_and_preserves_avatar_pixels() {
     let (ctx, mut app, address) = setup();
     session_request(address, "a", 1, "emote", 42);
+    step(&ctx, &mut app, vec![]);
+    toggle_option(&ctx, &mut app, "No frame");
     let single = step(&ctx, &mut app, vec![]);
     let original_single = avatars(&single)[0].1;
     drop(single);
+    toggle_option(&ctx, &mut app, "No frame");
     session_request(address, "b", 1, "emote", 84);
     let initial = wide_step(&ctx, &mut app, 384.0);
     let shared_frame = frames(&initial)[0].0;
@@ -1134,7 +1302,7 @@ fn small_surface_menu_has_independent_viewport_and_complete_controls() {
             "256 × 256",
             "384 × 384",
             "Transparent background",
-            "Background opacity",
+            "Background transparency",
             "No frame",
             "Vertical / Horizontal",
             "Horizontal",
@@ -1354,8 +1522,9 @@ fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
 
     session_request(address, "b", 3, "emote/close", 0);
     let retained = step(&ctx, &mut app, vec![]);
-    assert_eq!(avatars(&retained)[0].0, tiles[1].0);
-    assert!(retained.textures_delta.set.is_empty());
+    assert!(avatars(&retained).is_empty());
+    assert!(frames(&retained).is_empty());
+    assert!(has_clock(&retained));
     assert!(retained.textures_delta.free.is_empty());
     assert!(
         retained.viewport_output[&egui::ViewportId::ROOT]
@@ -1374,6 +1543,69 @@ fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
             .commands
             .is_empty()
     );
+}
+
+fn has_clock(output: &Output) -> bool {
+    output.shapes.iter().any(|shape| {
+        matches!(&shape.shape, egui::Shape::Text(text)
+            if text.galley.text().ends_with("\nWaiting Agents...")
+                && text.galley.text().len() == 37
+                && text.galley.text().as_bytes()[2] == b':'
+                && text.galley.text().as_bytes()[5] == b':'
+                && text.galley.text()[..8].bytes().enumerate().all(|(i, b)|
+                    i == 2 || i == 5 || b.is_ascii_digit())
+                && text.galley.text().as_bytes()[8] == b'\n'
+                && text.galley.text()[9..19].bytes().enumerate().all(|(i, b)|
+                    if i == 2 || i == 5 { b == b'/' } else { b.is_ascii_digit() }))
+    })
+}
+
+#[test]
+fn sole_avatar_close_immediately_shows_clock_and_new_avatar_replaces_it() {
+    let (ctx, mut app, address) = setup();
+    let waiting = step(&ctx, &mut app, vec![]);
+    assert!(!has_clock(&waiting));
+    assert!(waiting.shapes.iter().any(|s| matches!(&s.shape,
+        egui::Shape::Text(t) if t.galley.text().starts_with("Waiting for emote"))));
+    drop(waiting);
+    session_request(address, "a", 1, "emote", 42);
+    let active = step(&ctx, &mut app, vec![]);
+    assert_eq!(avatars(&active).len(), 1);
+    assert!(!has_clock(&active));
+    drop(active);
+    session_request(address, "a", 2, "emote/close", 0);
+    for size in [128.0, 192.0, 256.0, 384.0] {
+        let clock = surface_step(&ctx, &mut app, Vec2::splat(size));
+        assert!(has_clock(&clock));
+        let surface = egui::Rect::from_min_size(Pos2::ZERO, Vec2::splat(size));
+        let text = clock
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text().ends_with("\nWaiting Agents...") => {
+                    Some(text)
+                }
+                _ => None,
+            })
+            .expect("clock text must be painted");
+        let painted_bounds = text.galley.mesh_bounds.translate(text.pos.to_vec2());
+        assert!(
+            surface.contains_rect(painted_bounds),
+            "clock text must fit at {size}: {painted_bounds:?}"
+        );
+        assert!(avatars(&clock).is_empty());
+        assert!(frames(&clock).is_empty());
+        assert!(!clock.shapes.iter().any(|s| matches!(&s.shape,
+            egui::Shape::Text(t) if t.galley.text().starts_with("Waiting for emote"))));
+        assert!(
+            clock.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+                <= std::time::Duration::from_secs(1)
+        );
+    }
+    session_request(address, "b", 1, "emote", 84);
+    let restored = step(&ctx, &mut app, vec![]);
+    assert_eq!(avatars(&restored).len(), 1);
+    assert!(!has_clock(&restored));
 }
 
 #[test]
@@ -1729,6 +1961,8 @@ fn upload_only_on_new_snapshot_and_use_nearest_filter() {
 fn image_fits_with_five_source_rows_of_top_padding_and_full_uv() {
     let (ctx, mut app, address) = setup();
     step(&ctx, &mut app, vec![]);
+    // No frame preserves the original full-surface single-avatar composition.
+    toggle_option(&ctx, &mut app, "No frame");
     let mut pixels = [42, 7, 9, 255].repeat(64 * 64);
     pixels[59 * 64 * 4..].copy_from_slice(&[0, 0, 0, 255].repeat(5 * 64));
     let mut png = Vec::new();

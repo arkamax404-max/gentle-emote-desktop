@@ -48,6 +48,26 @@ pub fn take() -> egui::FullOutput {
     take_optional().expect("independent menu must render")
 }
 
+pub fn checked(output: &egui::FullOutput, label: &str) -> bool {
+    let text = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == label => Some(text),
+            _ => None,
+        })
+        .expect("checkbox label must be painted");
+    output.shapes.iter().any(|shape| match &shape.shape {
+        egui::Shape::Path(path) if path.points.len() == 3 => path.points.iter().all(|p| {
+            p.x < text.pos.x
+                && p.x > text.pos.x - 30.0
+                && p.y >= text.pos.y
+                && p.y <= text.pos.y + text.galley.size().y
+        }),
+        _ => false,
+    })
+}
+
 pub fn slider_position(label: &str, fraction: f32) -> egui::Pos2 {
     let output = take();
     let caption_bottom = output
