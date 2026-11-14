@@ -234,6 +234,7 @@ impl EmoteApp {
             ui.scope_id().with("emote-surface"),
             egui::Sense::click_and_drag(),
         );
+        let partially_opaque = (1..100).contains(&self.background_opacity);
         let unframed = self.no_frame || self.background_opacity < 100;
         let frame = if count > 1 && !unframed {
             Some(
@@ -304,7 +305,8 @@ impl EmoteApp {
                         .rect_filled(card_rect(center, side, gap, index), radius, fill);
                 }
             } else {
-                ui.painter().rect_filled(rect, 0.0, fill);
+                ui.painter()
+                    .rect_filled(rect, if partially_opaque { radius } else { 0.0 }, fill);
             }
         }
         for (index, snapshot) in snapshots.iter().enumerate() {
@@ -375,6 +377,10 @@ impl EmoteApp {
                     card_rect(center, side, gap, index),
                     radius,
                 );
+            } else if partially_opaque {
+                // Without native shadow, a single card needs the same explicit
+                // background/image contour as the stacked unframed cards.
+                paint_rounded_card_image(ui.painter(), texture.id(), image_rect, rect, radius);
             } else {
                 ui.painter().image(
                     texture.id(),

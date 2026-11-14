@@ -103,8 +103,8 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite contains **46 tests** (19 receiver, 4 session lifecycle,
-22 headless window, and 1 private shadow-policy unit test). The earlier popup
+The default suite contains **47 tests** (19 receiver, 4 session lifecycle,
+23 headless window, and 1 private shadow-policy unit test). The earlier popup
 update passed its 14 window tests, the shadow policy, and all 4 lifecycle tests.
 The frame update adds alpha/artwork checks and replaces the bevel geometry
 checks with frame-opening, texture reuse, and transparent/single-avatar checks. The
@@ -150,3 +150,8 @@ Transparent background selects zero and restores the last nonzero percentage
 when unchecked. Every percentage below 100 uses unframed packing and disables
 the Windows native shadow. Settings reset on restart. The independent No frame
 preference is preserved for fully opaque mode.
+
+At intermediate percentages a single avatar also retains an eight-point
+background and image contour. The image is clipped at draw time so opaque
+lower corners cannot cover the cutouts; cached pixels, the composition offset
+and fully opaque/clear single-avatar geometry stay unchanged.

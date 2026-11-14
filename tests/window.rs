@@ -223,6 +223,72 @@ fn set_background_opacity(ctx: &egui::Context, app: &mut EmoteApp, fraction: f32
 }
 
 #[test]
+fn partial_opacity_preserves_single_avatar_rounded_contour() {
+    let (ctx, mut app, address) = setup();
+    session_request(address, "a", 1, "emote", 42);
+    step(&ctx, &mut app, vec![]);
+    set_background_opacity(&ctx, &mut app, 0.5);
+    for size in [128.0, 192.0, 256.0, 384.0] {
+        let output = surface_step(&ctx, &mut app, Vec2::splat(size));
+        let surface = egui::Rect::from_min_size(Pos2::ZERO, Vec2::splat(size));
+        let background = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if r.fill.a() == 128 => Some(r),
+                _ => None,
+            })
+            .expect("half-opacity background must be painted");
+        assert_eq!(background.rect, surface);
+        assert_eq!(
+            background.corner_radius,
+            egui::CornerRadius::same(8),
+            "partial opacity must retain all four rounded corners without relying on native shadow"
+        );
+        let images = avatars(&output);
+        assert_eq!(images.len(), 1);
+        let inner = surface.shrink(8.0);
+        for shape in &output.shapes {
+            if let egui::Shape::Mesh(mesh) = &shape.shape {
+                if mesh.texture_id != images[0].0 {
+                    continue;
+                }
+                assert!(!mesh.vertices.is_empty());
+                for vertex in &mesh.vertices {
+                    let nearest = Pos2::new(
+                        vertex.pos.x.clamp(inner.left(), inner.right()),
+                        vertex.pos.y.clamp(inner.top(), inner.bottom()),
+                    );
+                    assert!(
+                        vertex.pos.distance(nearest) <= 8.001,
+                        "image pixels must not cover the rounded background contour: {:?}",
+                        vertex.pos
+                    );
+                    assert_eq!(vertex.color, egui::Color32::WHITE);
+                    assert!(
+                        (0.0..=1.0).contains(&vertex.uv.x) && (0.0..=1.0).contains(&vertex.uv.y)
+                    );
+                }
+            }
+        }
+        assert!(output.textures_delta.set.is_empty());
+    }
+    for fraction in [1.0, 0.0] {
+        set_background_opacity(&ctx, &mut app, fraction);
+        let output = step(&ctx, &mut app, vec![]);
+        let image_id = avatars(&output)[0].0;
+        assert!(
+            output
+                .shapes
+                .iter()
+                .any(|s| matches!(&s.shape, egui::Shape::Mesh(mesh)
+            if mesh.texture_id == image_id && mesh.vertices.len() == 4)),
+            "fully opaque/clear single-avatar paths preserve their original full-UV quad"
+        );
+    }
+}
+
+#[test]
 fn background_opacity_controls_only_underlay_and_restores_percentage() {
     let (ctx, mut app, address) = setup();
     session_request(address, "a", 1, "emote", 42);

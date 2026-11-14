@@ -234,3 +234,8 @@ Transparent background selects zero and restores the last nonzero percentage
 when unchecked. Every percentage below 100 uses unframed packing and disables
 the Windows native shadow. Settings reset on restart. The independent No frame
 preference is preserved for fully opaque mode.
+
+At intermediate percentages a single avatar also retains an eight-point
+background and image contour. The image is clipped at draw time so opaque
+lower corners cannot cover the cutouts; cached pixels, the composition offset
+and fully opaque/clear single-avatar geometry stay unchanged.
