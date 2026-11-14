@@ -103,8 +103,8 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite contains **39 tests** (19 receiver, 4 session lifecycle,
-15 headless window, and 1 private shadow-policy unit test). The earlier popup
+The default suite contains **41 tests** (19 receiver, 4 session lifecycle,
+17 headless window, and 1 private shadow-policy unit test). The earlier popup
 update passed its 14 window tests, the shadow policy, and all 4 lifecycle tests.
 The frame update adds alpha/artwork checks and replaces the bevel geometry
 checks with frame-opening, texture reuse, and transparent/single-avatar checks. The
@@ -126,3 +126,10 @@ not human visual confirmation of topmost, drag, or menu behavior. Real sender
 transport was separately exercised; per-real-frame framebuffer capture was not.
 Human window checks and Windows/Linux execution remain outstanding. On Wayland,
 topmost placement and window moves depend on compositor support/policy.
+
+## Runtime presentation controls
+
+The runtime-only **No frame** option keeps the background setting independent,
+omits the artwork and packs avatar images with five logical pixels of
+transparent separation. Fully transparent backgrounds also use this compact
+layout. The source PNGs and original artwork are unchanged.

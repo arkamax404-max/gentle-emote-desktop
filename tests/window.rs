@@ -311,6 +311,158 @@ fn multi_avatar_png_frames_preserve_transparency_single_fit_and_labels() {
 }
 
 #[test]
+fn no_frame_keeps_five_logical_pixels_between_adjacent_images() {
+    let (ctx, mut app, address) = setup();
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "b", 1, "emote", 84);
+    step(&ctx, &mut app, vec![]);
+    toggle_option(&ctx, &mut app, "No frame");
+    for count in [2, 3] {
+        if count == 3 {
+            session_request(address, "c", 1, "emote", 126);
+        }
+        for transparent in [false, true] {
+            if transparent {
+                toggle_background(&ctx, &mut app);
+            }
+            for size in [128.0, 192.0, 256.0, 384.0] {
+                let mut raw = input(vec![]);
+                let bounds =
+                    egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(count as f32 * size, size));
+                raw.screen_rect = Some(bounds);
+                let output = Output::new(&ctx, ctx.run_ui(raw, |ui| app.show(ui)));
+                let images = avatars(&output);
+                assert_eq!(images.len(), count);
+                assert!(frames(&output).is_empty());
+                for pair in images.windows(2) {
+                    let gap = pair[1].1.left() - pair[0].1.right();
+                    assert!(
+                        (gap - 5.0).abs() < 0.001,
+                        "{count} images, size {size}, transparent={transparent}: expected 5 px, got {gap}"
+                    );
+                    let strip = egui::Rect::from_min_max(
+                        egui::pos2(pair[0].1.right() + 0.001, bounds.top()),
+                        egui::pos2(pair[1].1.left() - 0.001, bounds.bottom()),
+                    );
+                    assert!(
+                        output.shapes.iter().all(|shape| !matches!(
+                            &shape.shape, egui::Shape::Rect(paint)
+                            if paint.fill.a() > 0 && paint.rect.intersects(strip)
+                        )),
+                        "the five-pixel separator must have no opaque background paint"
+                    );
+                    assert!((pair[0].1.top() - pair[1].1.top()).abs() < 0.001);
+                    assert!((pair[0].1.size() - pair[1].1.size()).length() < 0.001);
+                }
+                assert!(images.iter().all(|(_, image)| bounds.contains_rect(*image)));
+                assert_eq!(
+                    eframe::App::clear_color(&app, &egui::Visuals::default()),
+                    [0.0; 4]
+                );
+                for (_, image) in &images {
+                    let underlay = egui::pos2(image.center().x, bounds.top() + 1.0);
+                    let black = output.shapes.iter().any(|shape| {
+                        matches!(
+                            &shape.shape, egui::Shape::Rect(paint)
+                            if paint.fill == egui::Color32::BLACK && paint.rect.contains(underlay)
+                        )
+                    });
+                    assert_eq!(
+                        black, !transparent,
+                        "only the gaps become transparent; preserve the background setting"
+                    );
+                }
+            }
+        }
+        toggle_background(&ctx, &mut app);
+    }
+}
+
+#[test]
+fn no_frame_toggle_is_independent_of_transparency_and_preserves_avatar_pixels() {
+    let (ctx, mut app, address) = setup();
+    session_request(address, "a", 1, "emote", 42);
+    let single = step(&ctx, &mut app, vec![]);
+    let original_single = avatars(&single)[0].1;
+    drop(single);
+    session_request(address, "b", 1, "emote", 84);
+    let initial = wide_step(&ctx, &mut app, 384.0);
+    let shared_frame = frames(&initial)[0].0;
+    let avatar_ids: Vec<_> = avatars(&initial).iter().map(|(id, _)| *id).collect();
+    assert_eq!(frames(&initial).len(), 2, "default keeps existing frames");
+    drop(initial);
+
+    toggle_option(&ctx, &mut app, "No frame");
+    let hidden = wide_step(&ctx, &mut app, 384.0);
+    assert!(frames(&hidden).is_empty());
+    assert!(
+        hidden
+            .shapes
+            .iter()
+            .any(|s| matches!(&s.shape, egui::Shape::Rect(r)
+        if r.fill == egui::Color32::BLACK && r.rect.contains(avatars(&hidden)[0].1.center()))),
+        "No frame keeps the opaque avatar underlay outside the transparent gaps"
+    );
+    assert_eq!(
+        avatars(&hidden)
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        avatar_ids
+    );
+    assert!(
+        hidden.textures_delta.set.is_empty(),
+        "hiding only the decoration does not reupload image pixels"
+    );
+    assert!(
+        (avatars(&hidden)[0].1.width() - 64.0 * 184.0 / 69.0).abs() < 0.001,
+        "reclaim the unframed image fit"
+    );
+    drop(hidden);
+
+    toggle_background(&ctx, &mut app);
+    assert!(!has_black_background(&step(&ctx, &mut app, vec![])));
+    toggle_option(&ctx, &mut app, "No frame");
+    assert!(
+        frames(&wide_step(&ctx, &mut app, 384.0)).is_empty(),
+        "transparent mode never draws frames even when no frame is unchecked"
+    );
+    toggle_background(&ctx, &mut app);
+    let restored = wide_step(&ctx, &mut app, 384.0);
+    assert_eq!(
+        frames(&restored)
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        vec![shared_frame; 2]
+    );
+    assert!(
+        restored.textures_delta.set.is_empty(),
+        "reuse the shared frame texture"
+    );
+    assert!(has_black_background(&step(&ctx, &mut app, vec![])));
+    drop(restored);
+
+    toggle_background(&ctx, &mut app);
+    toggle_option(&ctx, &mut app, "No frame");
+    toggle_background(&ctx, &mut app);
+    let opaque_unframed = wide_step(&ctx, &mut app, 384.0);
+    assert!(
+        frames(&opaque_unframed).is_empty(),
+        "no frame selection survives a transparent round trip"
+    );
+    drop(opaque_unframed);
+    session_request(address, "b", 2, "emote/close", 0);
+    let remaining = step(&ctx, &mut app, vec![]);
+    assert!(frames(&remaining).is_empty());
+    assert_eq!(
+        avatars(&remaining)[0].1,
+        original_single,
+        "single avatar geometry unchanged"
+    );
+}
+
+#[test]
 fn small_surface_menu_has_independent_viewport_and_complete_controls() {
     for size in [126.0, 128.0] {
         let (ctx, mut app, _) = setup();
@@ -356,6 +508,7 @@ fn small_surface_menu_has_independent_viewport_and_complete_controls() {
             "256 × 256",
             "384 × 384",
             "Transparent background",
+            "No frame",
             "Exit",
         ] {
             let text = child
@@ -768,6 +921,23 @@ fn menu_actions_resize_square_or_close_without_dragging() {
 }
 
 fn toggle_background(ctx: &egui::Context, app: &mut EmoteApp) {
+    toggle_option(ctx, app, "Transparent background");
+}
+
+fn toggle_option(ctx: &egui::Context, app: &mut EmoteApp, label: &str) {
+    let output = select_menu_option(ctx, app, label);
+    assert!(
+        output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .is_empty(),
+        "toggle must not move, resize, or close the window"
+    );
+}
+
+fn select_menu_option(ctx: &egui::Context, app: &mut EmoteApp, label: &str) -> Output {
+    // Restore the helper's normal surface before hit-testing a click: the last
+    // public render may have exercised a narrow transient viewport.
+    step(ctx, app, vec![]);
     let p = Pos2::new(20.0, 20.0);
     step(
         ctx,
@@ -785,26 +955,20 @@ fn toggle_background(ctx: &egui::Context, app: &mut EmoteApp) {
         .iter()
         .find_map(|shape| {
             if let egui::Shape::Text(text) = &shape.shape
-                && text.galley.text() == "Transparent background"
+                && text.galley.text() == label
             {
                 return Some(text.pos + Vec2::splat(4.0));
             }
             None
         })
-        .expect("transparency checkbox must be painted");
+        .unwrap_or_else(|| panic!("menu option must be painted: {label}"));
     menu::events(vec![
         Event::PointerMoved(p),
         button(p, PointerButton::Primary, true),
     ]);
     step(ctx, app, vec![]);
     menu::events(vec![button(p, PointerButton::Primary, false)]);
-    let output = step(ctx, app, vec![]);
-    assert!(
-        output.viewport_output[&egui::ViewportId::ROOT]
-            .commands
-            .is_empty(),
-        "toggle must not move, resize, or close the window"
-    );
+    step(ctx, app, vec![])
 }
 
 fn has_black_background(output: &Output) -> bool {

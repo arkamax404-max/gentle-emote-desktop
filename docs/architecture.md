@@ -210,3 +210,10 @@ These are reading/prediction exercises, not additional product capabilities:
    and `from_rgba_unmultiplied`. Explain why the default still looks opaque, why
    enabling transparency cannot remove opaque black image pixels, and why neither
    mode enables click-through.
+
+## Runtime presentation controls
+
+The runtime-only **No frame** option keeps the background setting independent,
+omits the artwork and packs avatar images with five logical pixels of
+transparent separation. Fully transparent backgrounds also use this compact
+layout. The source PNGs and original artwork are unchanged.

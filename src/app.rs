@@ -58,6 +58,7 @@ pub struct EmoteApp {
     tile_size: f32,
     applied_size: Vec2,
     transparent_background: bool,
+    no_frame: bool,
     menu_open: bool,
     menu_position: Option<egui::Pos2>,
     menu_size: Vec2,
@@ -75,6 +76,7 @@ impl EmoteApp {
             tile_size: 192.0,
             applied_size: Vec2::splat(192.0),
             transparent_background: false,
+            no_frame: false,
             menu_open: false,
             menu_position: None,
             menu_size: egui::vec2(208.0, 176.0),
@@ -137,12 +139,8 @@ impl EmoteApp {
             ui.scope_id().with("emote-surface"),
             egui::Sense::click_and_drag(),
         );
-        // The window supports alpha, but remains opaque black until selected.
-        // Only the surface changes: opaque black pixels in the PNG stay black.
-        if !self.transparent_background {
-            ui.painter().rect_filled(rect, 0.0, egui::Color32::BLACK);
-        }
-        let frame = if count > 1 && !self.transparent_background {
+        let unframed = self.no_frame || self.transparent_background;
+        let frame = if count > 1 && !unframed {
             Some(
                 self.frame_texture
                     .get_or_insert_with(|| load_avatar_frame(ui.ctx())),
@@ -150,15 +148,72 @@ impl EmoteApp {
         } else {
             None
         };
+        let packed_layout = if unframed && count > 1 {
+            let (along, across) = (rect.width(), rect.height());
+            let padding = 4.0_f32.min(along.min(across) * 0.25);
+            let available = along - 2.0 * padding;
+            // The gap belongs between image edges, not between virtual tiles.
+            // Clamp only while a transient OS resize is too narrow for the gaps.
+            // Leave positive image space even on tiny transient surfaces.
+            let gap = 5.0_f32.min(available / (2.0 * count as f32 - 1.0));
+            // Vertical packing reserves the composition's global top padding.
+            let units = count as f32;
+            let side = ((available - gap * (count - 1) as f32) / units)
+                .min((across - 2.0 * padding) * 64.0 / 69.0)
+                .max(0.0);
+            Some((rect.center(), side, gap))
+        } else {
+            None
+        };
+        // Background and textured meshes must use exactly the same card bounds.
+        let card_rect = |center: egui::Pos2, side: f32, gap: f32, index: usize| {
+            let (center, min, max) = (center.x, rect.left(), rect.right());
+            let first = center - (side * count as f32 + gap * (count - 1) as f32) / 2.0;
+            let start = if index == 0 {
+                min
+            } else {
+                first + index as f32 * (side + gap)
+            };
+            let end = if index + 1 == count {
+                max
+            } else {
+                first + index as f32 * (side + gap) + side
+            };
+            egui::Rect::from_min_max(
+                egui::pos2(start, rect.top()),
+                egui::pos2(end, rect.bottom()),
+            )
+        };
+        if !self.transparent_background {
+            let fill = egui::Color32::BLACK;
+            if let Some((center, side, gap)) = packed_layout {
+                for index in 0..count {
+                    ui.painter()
+                        .rect_filled(card_rect(center, side, gap, index), 0.0, fill);
+                }
+            } else {
+                ui.painter().rect_filled(rect, 0.0, fill);
+            }
+        }
         for (index, snapshot) in snapshots.iter().enumerate() {
             let texture = &self.textures[&snapshot.session_id].texture;
             // Divide the full surface into neighboring tiles, preserving the single
             // avatar's fit even while the OS is processing a resize request.
-            let rect = egui::Rect::from_min_size(
-                rect.min + Vec2::new(index as f32 * rect.width() / count as f32, 0.0),
-                Vec2::new(rect.width() / count as f32, rect.height()),
+            let width = rect.width() / count as f32;
+            let (offset, size) = (
+                Vec2::new(index as f32 * width, 0.0),
+                Vec2::new(width, rect.height()),
             );
-            let (rect, decoration) = if let Some(frame) = &frame {
+            let rect = egui::Rect::from_min_size(rect.min + offset, size);
+            let (rect, decoration) = if let Some((center, side, gap)) = packed_layout {
+                let extent = side * count as f32 + gap * (count - 1) as f32;
+                let offset = -extent / 2.0 + side / 2.0 + index as f32 * (side + gap);
+                let center = center + Vec2::new(offset, 0.0);
+                (
+                    egui::Rect::from_center_size(center, egui::vec2(side, side * 69.0 / 64.0)),
+                    None,
+                )
+            } else if let Some(frame) = &frame {
                 let artwork = frame.size_vec2();
                 let scale = (rect.width() / artwork.x).min(rect.height() / artwork.y);
                 let border = egui::Rect::from_center_size(rect.center(), artwork * scale);
@@ -170,7 +225,7 @@ impl EmoteApp {
                 );
                 (opening, Some((frame.id(), border)))
             } else if count > 1 {
-                // Preserve transparent-mode geometry, including narrow resizes.
+                // Both unframed modes retain the same fit, including narrow resizes.
                 (
                     rect.shrink(4.0_f32.min(rect.width().min(rect.height()) * 0.25)),
                     None,
@@ -265,6 +320,11 @@ impl EmoteApp {
                         ui.checkbox(&mut self.transparent_background, "Transparent background");
                     content_width = content_width.max(transparency.rect.width());
                     if transparency.changed() {
+                        self.menu_open = false;
+                    }
+                    let no_frame = ui.checkbox(&mut self.no_frame, "No frame");
+                    content_width = content_width.max(no_frame.rect.width());
+                    if no_frame.changed() {
                         self.menu_open = false;
                     }
                     ui.separator();
