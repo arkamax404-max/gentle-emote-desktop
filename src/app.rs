@@ -59,6 +59,7 @@ pub struct EmoteApp {
     applied_size: Vec2,
     transparent_background: bool,
     no_frame: bool,
+    vertical_stacking: bool,
     menu_open: bool,
     menu_position: Option<egui::Pos2>,
     menu_size: Vec2,
@@ -77,6 +78,7 @@ impl EmoteApp {
             applied_size: Vec2::splat(192.0),
             transparent_background: false,
             no_frame: false,
+            vertical_stacking: false,
             menu_open: false,
             menu_position: None,
             menu_size: egui::vec2(208.0, 176.0),
@@ -131,6 +133,7 @@ impl EmoteApp {
             }
         }
         let count = snapshots.len().max(1);
+        let vertical = self.vertical_stacking;
         let rect = ui.max_rect();
         // One full-window hit target lets the image and placeholder share exactly
         // the same controls. Painting text does not steal drag/menu interactions.
@@ -149,7 +152,11 @@ impl EmoteApp {
             None
         };
         let packed_layout = if unframed && count > 1 {
-            let (along, across) = (rect.width(), rect.height());
+            let (along, across) = if vertical {
+                (rect.height(), rect.width())
+            } else {
+                (rect.width(), rect.height())
+            };
             let padding = 4.0_f32.min(along.min(across) * 0.25);
             let available = along - 2.0 * padding;
             // The gap belongs between image edges, not between virtual tiles.
@@ -157,7 +164,7 @@ impl EmoteApp {
             // Leave positive image space even on tiny transient surfaces.
             let gap = 5.0_f32.min(available / (2.0 * count as f32 - 1.0));
             // Vertical packing reserves the composition's global top padding.
-            let units = count as f32;
+            let units = count as f32 + if vertical { 5.0 / 64.0 } else { 0.0 };
             let side = ((available - gap * (count - 1) as f32) / units)
                 .min((across - 2.0 * padding) * 64.0 / 69.0)
                 .max(0.0);
@@ -167,7 +174,11 @@ impl EmoteApp {
         };
         // Background and textured meshes must use exactly the same card bounds.
         let card_rect = |center: egui::Pos2, side: f32, gap: f32, index: usize| {
-            let (center, min, max) = (center.x, rect.left(), rect.right());
+            let (center, min, max) = if vertical {
+                (center.y + side * 5.0 / 128.0, rect.top(), rect.bottom())
+            } else {
+                (center.x, rect.left(), rect.right())
+            };
             let first = center - (side * count as f32 + gap * (count - 1) as f32) / 2.0;
             let start = if index == 0 {
                 min
@@ -179,10 +190,17 @@ impl EmoteApp {
             } else {
                 first + index as f32 * (side + gap) + side
             };
-            egui::Rect::from_min_max(
-                egui::pos2(start, rect.top()),
-                egui::pos2(end, rect.bottom()),
-            )
+            if vertical {
+                egui::Rect::from_min_max(
+                    egui::pos2(rect.left(), start),
+                    egui::pos2(rect.right(), end),
+                )
+            } else {
+                egui::Rect::from_min_max(
+                    egui::pos2(start, rect.top()),
+                    egui::pos2(end, rect.bottom()),
+                )
+            }
         };
         if !self.transparent_background {
             let fill = egui::Color32::BLACK;
@@ -199,16 +217,29 @@ impl EmoteApp {
             let texture = &self.textures[&snapshot.session_id].texture;
             // Divide the full surface into neighboring tiles, preserving the single
             // avatar's fit even while the OS is processing a resize request.
-            let width = rect.width() / count as f32;
-            let (offset, size) = (
-                Vec2::new(index as f32 * width, 0.0),
-                Vec2::new(width, rect.height()),
-            );
+            let (offset, size) = if vertical {
+                let height = rect.height() / count as f32;
+                (
+                    Vec2::new(0.0, index as f32 * height),
+                    Vec2::new(rect.width(), height),
+                )
+            } else {
+                let width = rect.width() / count as f32;
+                (
+                    Vec2::new(index as f32 * width, 0.0),
+                    Vec2::new(width, rect.height()),
+                )
+            };
             let rect = egui::Rect::from_min_size(rect.min + offset, size);
             let (rect, decoration) = if let Some((center, side, gap)) = packed_layout {
                 let extent = side * count as f32 + gap * (count - 1) as f32;
                 let offset = -extent / 2.0 + side / 2.0 + index as f32 * (side + gap);
-                let center = center + Vec2::new(offset, 0.0);
+                let center = center
+                    + if vertical {
+                        Vec2::new(0.0, offset)
+                    } else {
+                        Vec2::new(offset, 0.0)
+                    };
                 (
                     egui::Rect::from_center_size(center, egui::vec2(side, side * 69.0 / 64.0)),
                     None,
@@ -328,6 +359,20 @@ impl EmoteApp {
                         self.menu_open = false;
                     }
                     ui.separator();
+                    let orientation = ui.label("Vertical / Horizontal");
+                    content_width = content_width.max(orientation.rect.width());
+                    let choices = ui.horizontal(|ui| {
+                        let horizontal =
+                            ui.radio_value(&mut self.vertical_stacking, false, "Horizontal");
+                        let vertical =
+                            ui.radio_value(&mut self.vertical_stacking, true, "Vertical");
+                        if horizontal.clicked() || vertical.clicked() {
+                            self.menu_open = false;
+                        }
+                        horizontal.rect.union(vertical.rect).width()
+                    });
+                    content_width = content_width.max(choices.inner);
+                    ui.separator();
                     let exit = ui.button("Exit");
                     content_width = content_width.max(exit.rect.width());
                     if exit.clicked() {
@@ -359,7 +404,11 @@ impl EmoteApp {
         }
         // Resize only for a changed count/selection, not every repaint or heartbeat.
         // The waiting surface occupies one tile before any frame arrives.
-        let size = Vec2::new(count as f32 * self.tile_size, self.tile_size);
+        let size = if self.vertical_stacking {
+            Vec2::new(self.tile_size, count as f32 * self.tile_size)
+        } else {
+            Vec2::new(count as f32 * self.tile_size, self.tile_size)
+        };
         if size != self.applied_size {
             ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(size));
             self.applied_size = size;

@@ -21,13 +21,13 @@ If Cargo is not on PATH on the development host, substitute
 `/Users/santiagoperez/.cargo/bin/cargo` for `cargo`. These instructions do not
 install tools, modify PATH, or change sender configuration.
 
-The current suite contains **41 non-ignored tests: 19 receiver, 4 session lifecycle,
-17 window, and 1 private shadow-policy unit test**. The frame/compact-popup checks
+The current suite contains **42 non-ignored tests: 19 receiver, 4 session lifecycle,
+18 window, and 1 private shadow-policy unit test**. The frame/compact-popup checks
 passed all 15 window tests and the shadow policy; the earlier lifecycle check
 passed 4/4. The most recent full-suite attempt failed one receiver test with
 Windows OS 10053; it was not rerun for this UI update. See the evidence below.
 On macOS, Cargo also lists one ignored native startup test; it is not part of
-those 41. On other platforms,
+those 42. On other platforms,
 that startup test is excluded by a target guard.
 A headless suite needs no running GUI, but still compiles native dependencies;
 Linux builds need suitable graphics/toolchain libraries.
@@ -35,7 +35,7 @@ Linux builds need suitable graphics/toolchain libraries.
 | Test file | What its passing tests establish |
 | --- | --- |
 | [`tests/receiver.rs`](../tests/receiver.rs), 19 | Real TCP/HTTP validation, exact status/body assertions, rejection preserving snapshot and notification count, byte/deadline/connection bounds, PNG normalization, publication ordering, snapshots, bind failures, and owned shutdown; includes three response-reader guards |
-| [`tests/window.rs`](../tests/window.rs), 17 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry, no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
+| [`tests/window.rs`](../tests/window.rs), 18 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry, no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
 | [`tests/sessions.rs`](../tests/sessions.rs), 4 | Deterministic registry lease/expiry, reactivation, isolation, retention, ordering, legacy compatibility, caps, and finite replay horizon |
 | [`src/app.rs`](../src/app.rs), 1 | Checkbox-driven opaque → transparent → opaque shadow policy; no native window or compositor is exercised |
 | [`tests/startup.rs`](../tests/startup.rs), 1 ignored on macOS | An explicitly launched production process reports an occupied fixed port and terminates as expected on that host |
@@ -382,5 +382,10 @@ The runtime-only **No frame** option keeps the background setting independent,
 omits the artwork and packs avatar images with five logical pixels of
 transparent separation. Fully transparent backgrounds also use this compact
 layout. The source PNGs and original artwork are unchanged.
+
+**Vertical / Horizontal** provides exclusive stacking choices, initially
+Horizontal. Each selection preserves the chosen per-avatar size, cached
+textures, frame preference and clear five-point separators. The root window
+resizes to the selected axis; there is no wrapping.
 
 Publication-slice validation runs the public window tests and the native-shadow policy test in an isolated copy. Historical receiver-suite failure and unresolved native review remain unchanged; inventory is not a full-suite pass claim.

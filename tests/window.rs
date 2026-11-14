@@ -311,6 +311,98 @@ fn multi_avatar_png_frames_preserve_transparency_single_fit_and_labels() {
 }
 
 #[test]
+fn stacking_selector_switches_axes_and_preserves_frames_and_transparent_gaps() {
+    let (ctx, mut app, address) = setup();
+    session_request(address, "a", 1, "emote", 42);
+    let single_bounds = avatars(&step(&ctx, &mut app, vec![]))[0].1;
+    session_request(address, "b", 1, "emote", 84);
+    let horizontal = wide_step(&ctx, &mut app, 384.0);
+    assert_eq!(frames(&horizontal).len(), 2);
+    assert!(avatars(&horizontal)[0].1.right() < avatars(&horizontal)[1].1.left());
+    drop(horizontal);
+    let selection = select_menu_option(&ctx, &mut app, "Vertical");
+    assert_eq!(
+        selection.viewport_output[&egui::ViewportId::ROOT].commands,
+        vec![ViewportCommand::InnerSize(Vec2::new(192.0, 384.0))]
+    );
+    drop(selection);
+    let render = |app: &mut EmoteApp, count: usize, size: f32| {
+        let mut raw = input(vec![]);
+        raw.screen_rect = Some(egui::Rect::from_min_size(
+            Pos2::ZERO,
+            Vec2::new(size, count as f32 * size),
+        ));
+        Output::new(&ctx, ctx.run_ui(raw, |ui| app.show(ui)))
+    };
+    let vertical = render(&mut app, 2, 192.0);
+    assert_eq!(frames(&vertical).len(), 2);
+    assert!(avatars(&vertical)[0].1.bottom() < avatars(&vertical)[1].1.top());
+    assert!((avatars(&vertical)[0].1.left() - avatars(&vertical)[1].1.left()).abs() < 0.001);
+    drop(vertical);
+    toggle_option(&ctx, &mut app, "No frame");
+    for count in [2, 3] {
+        if count == 3 {
+            session_request(address, "c", 1, "emote", 126);
+        }
+        for size in [128.0, 192.0, 256.0, 384.0] {
+            let output = render(&mut app, count, size);
+            let images = avatars(&output);
+            assert_eq!(images.len(), count);
+            assert!(frames(&output).is_empty());
+            for pair in images.windows(2) {
+                assert!((pair[1].1.top() - pair[0].1.bottom() - 5.0).abs() < 0.001);
+                let strip = egui::Rect::from_min_max(
+                    egui::pos2(0.0, pair[0].1.bottom() + 0.001),
+                    egui::pos2(size, pair[1].1.top() - 0.001),
+                );
+                assert!(
+                    output
+                        .shapes
+                        .iter()
+                        .all(|s| !matches!(&s.shape,egui::Shape::Rect(r)
+                    if r.fill.a()>0 && r.rect.intersects(strip))),
+                    "vertical gaps stay transparent"
+                );
+                assert!(
+                    output
+                        .shapes
+                        .iter()
+                        .any(|s| matches!(&s.shape,egui::Shape::Rect(r)
+                    if r.fill==egui::Color32::BLACK && r.rect.contains(pair[0].1.center()))),
+                    "opaque avatar underlay preserved"
+                );
+            }
+        }
+    }
+    session_request(address, "c", 2, "emote/close", 0);
+    render(&mut app, 2, 192.0);
+    toggle_background(&ctx, &mut app);
+    let transparent = render(&mut app, 2, 192.0);
+    assert!(
+        !transparent
+            .shapes
+            .iter()
+            .any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.fill.a()>0))
+    );
+    assert!(
+        (avatars(&transparent)[1].1.top() - avatars(&transparent)[0].1.bottom() - 5.0).abs()
+            < 0.001
+    );
+    drop(transparent);
+    toggle_option(&ctx, &mut app, "No frame");
+    toggle_background(&ctx, &mut app);
+    assert_eq!(frames(&render(&mut app, 2, 192.0)).len(), 2);
+    let selection = select_menu_option(&ctx, &mut app, "Horizontal");
+    assert_eq!(
+        selection.viewport_output[&egui::ViewportId::ROOT].commands,
+        vec![ViewportCommand::InnerSize(Vec2::new(384.0, 192.0))]
+    );
+    drop(selection);
+    session_request(address, "b", 2, "emote/close", 0);
+    assert_eq!(avatars(&step(&ctx, &mut app, vec![]))[0].1, single_bounds);
+}
+
+#[test]
 fn no_frame_keeps_five_logical_pixels_between_adjacent_images() {
     let (ctx, mut app, address) = setup();
     session_request(address, "a", 1, "emote", 42);
@@ -509,6 +601,9 @@ fn small_surface_menu_has_independent_viewport_and_complete_controls() {
             "384 × 384",
             "Transparent background",
             "No frame",
+            "Vertical / Horizontal",
+            "Horizontal",
+            "Vertical",
             "Exit",
         ] {
             let text = child

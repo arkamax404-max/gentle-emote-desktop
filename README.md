@@ -103,8 +103,8 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite contains **41 tests** (19 receiver, 4 session lifecycle,
-17 headless window, and 1 private shadow-policy unit test). The earlier popup
+The default suite contains **42 tests** (19 receiver, 4 session lifecycle,
+18 headless window, and 1 private shadow-policy unit test). The earlier popup
 update passed its 14 window tests, the shadow policy, and all 4 lifecycle tests.
 The frame update adds alpha/artwork checks and replaces the bevel geometry
 checks with frame-opening, texture reuse, and transparent/single-avatar checks. The
@@ -133,3 +133,8 @@ The runtime-only **No frame** option keeps the background setting independent,
 omits the artwork and packs avatar images with five logical pixels of
 transparent separation. Fully transparent backgrounds also use this compact
 layout. The source PNGs and original artwork are unchanged.
+
+**Vertical / Horizontal** provides exclusive stacking choices, initially
+Horizontal. Each selection preserves the chosen per-avatar size, cached
+textures, frame preference and clear five-point separators. The root window
+resizes to the selected axis; there is no wrapping.
