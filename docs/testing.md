@@ -22,8 +22,8 @@ If Cargo is not on PATH on the development host, substitute
 install tools, modify PATH, or change sender configuration.
 
 The current suite contains **47 non-ignored tests: 19 receiver, 4 session lifecycle,
-23 window, and 1 private shadow-policy unit test**. The frame/compact-popup checks
-passed all 15 window tests and the shadow policy; the earlier lifecycle check
+23 window, and 1 private shadow-policy unit test**. The earlier frame/compact-popup checks
+passed all 15 then-existing window tests and the shadow policy; the earlier lifecycle check
 passed 4/4. The most recent full-suite attempt failed one receiver test with
 Windows OS 10053; it was not rerun for this UI update. See the evidence below.
 On macOS, Cargo also lists one ignored native startup test; it is not part of
@@ -137,6 +137,138 @@ Headless outputs establish dispatch, layout and settings behavior, not real OS
 focus, DPI, screen-edge placement or compositor visuals. Manual native popup
 and transparent-border inspection remain pending. No current full-suite green,
 remote CI, native review approval or publication is claimed for this update.
+
+## Independent No frame option
+
+The exact **No frame** checkbox hides decorative PNG frames without changing the
+background setting. It starts unchecked and resets on restart. With multiple
+avatars it preserves image dimensions but centers their group with exactly five
+logical pixels between adjacent image edges. Separators always expose the
+transparent renderer clear, even when the remaining background stays opaque
+black. No PNG colors or alpha are rewritten. Window dimensions and single-avatar geometry are unchanged.
+The gap is clamped only for transient surfaces too narrow to contain it. Transparent mode never paints frames, and switching
+background modes does not reset the independent checkbox. Single-avatar geometry
+and source textures are unchanged; restoring frames reuses the shared texture.
+The popup includes the new row in its existing content-sizing calculation.
+
+The public-interface regression drives the actual native-child UI checkbox,
+checks frame meshes, background paint, image fit and texture reuse, crosses both
+settings in both directions, and removes a session to check single-avatar fit.
+The initial RED run failed at `checkbox must be painted: no frame` (one test
+executed, one failed). After implementation, all 16 window tests and the
+shadow-policy unit test passed, along with format, offline all-target Clippy
+with warnings denied, and an offline native build. The earlier full-suite
+OS 10053 receiver failure was not retried as part of this UI-only change.
+Native visual acceptance of the new checkbox remains separate from these
+headless dispatch and geometry assertions.
+
+The follow-up spacing/capitalization RED ran two tests and failed both: the old
+caption did not match `No frame`, and the original unframed geometry left
+16.695648 points between images at size 128 instead of five. The spacing
+regression covers two and three avatars, sizes 128/192/256/384, and both opaque
+and transparent backgrounds, inspecting actual image rectangles. The first
+post-implementation run passed 16/17 window tests but failed an overstrict exact
+vertical-coordinate comparison (12.695656 versus 12.695659); the assertion now
+uses the same 0.001-point floating tolerance as the gap and size checks. The
+corrected run passed all 17 window tests, the shadow-policy unit test, format,
+offline all-target Clippy with warnings denied, and the offline native build.
+The receiver suite and unresolved native review were not retried.
+
+The requested transparent-separator follow-up first failed because the five-pixel
+strip still intersected opaque background paint. Splitting only that background
+into segments passed both No frame regressions. Checks cover the complete gap
+strip, transparent renderer clear, and preserved opaque underlays behind avatars.
+
+### Vertical / Horizontal selector
+
+Two exclusive radio choices select the stacking axis, initially Horizontal and
+reset on restart. Selection closes only the menu, updates the root dimensions
+once, and preserves size per avatar. Single-avatar geometry is unchanged.
+No frame's five-pixel transparent separator follows the stacking axis: vertical
+strips for a horizontal row, horizontal strips for a vertical column.
+
+The initial public-menu RED failed at `checkbox must be painted: Vertical`.
+The added regression checks default horizontal framing, vertical resize and
+image order, two/three avatars at sizes 128/192/256/384 with clear separators and
+opaque underlays, full transparency, restoration of frames, switching back to
+Horizontal, and exact single-avatar restoration. Popup layout checks also include
+the selector heading and both radio labels. Final verification passed all 18
+window tests, the shadow-policy unit test, format, offline all-target Clippy with
+warnings denied, and the offline native build. No receiver-suite or native-review
+retry was performed; compositor-level visual acceptance remains separate.
+
+### Rounded card corners beside separators
+
+Human Image 4 showed square adjoining corners. The first underlay-only fix used
+four logical pixels and passed 19 window tests, but Image 5 explicitly rejected
+that result: rounding was smaller than the original and lower corners still
+looked square. Those tests were insufficient evidence of the complete contour.
+
+Two new RED failures reproduced the defects: background radius four instead of
+eight, and an actual image mesh vertex at `[131.3, 124.0]` outside the desired
+rounded card at size 128. No frame now uses an eight-logical-pixel outline for
+both background and image. The rounded convex card is intersected with the image
+rectangle; only the textured draw mesh is clipped, without rewriting cached PNG
+pixels or changing its original coordinate/UV fit. Framed and single-avatar
+paths keep their previous drawing behavior. No frame also applies the contour
+when the remaining background is transparent.
+
+Public-output regressions inspect every image vertex against the analytic
+rounded-card mask, valid source UVs, nonempty meshes, all four background radii,
+three cards, both orientations and sizes 128/192/256/384. They also retain checks
+for image bounds, unchanged uploads, five-pixel clear separators and old controls.
+Final verification passed all 20 window tests, the shadow-policy unit test,
+format, offline all-target Clippy with warnings denied, and offline native build.
+No full receiver suite or native review retry was performed. Human visual
+acceptance of this corrected eight-pixel complete contour is still pending.
+
+### Automatic unframed transparency and background opacity
+
+Any background percentage below 100 automatically omits decorative frames and
+uses the compact five-pixel layout, regardless of the opaque-mode No frame
+preference. Returning to 100 respects that preference and reuses the frame asset.
+Narrow transient surfaces reserve positive image space while clamping gaps.
+
+The background-only slider covers 0–100%, starts at 100%, and is runtime-only.
+At 50%, black underlays use alpha 128; image-mesh vertex colors remain white,
+source textures are not reuploaded, and the options surface stays opaque.
+The full-transparency checkbox selects 0%, then restores the last nonzero slider
+percentage on deselection. Windows' native shadow is enabled only at 100%.
+
+New public-interface regressions cover automatic compact layout with both axes,
+two/three avatars, sizes 128/192/256/384, narrow 16/4-point resizes, restored frame
+preferences, slider values 0/50/100, unchanged avatar textures/colors, opaque menu
+paint and remembered percentages. The existing UI-driven shadow-policy test also
+covers partial opacity, restoring it through the checkbox, and returning to 100%.
+Follow-up verification (job51): all 22 window tests and the one UI-driven
+native-shadow policy test passed, followed by formatting, offline all-target
+Clippy with warnings denied, and an offline native build. The initial GREEN49
+fixture incorrectly rejected the third avatar's first texture upload; it now
+asserts that upload before checking resize reuse. GREEN50 exposed a simulated
+menu click against the preceding four-point viewport; an idle layout pass in
+the input helper fixed the sequencing without changing application restoration.
+These checks do not establish uniform per-card top padding: that separately
+reported compact-layout geometry issue remains uncorrected. The receiver suite
+was not rerun, and its historical connection-aborted failure and unresolved
+native review are not superseded.
+
+### Rounded intermediate-opacity single-avatar contour
+
+The single-avatar fallback previously painted a square background at partial
+opacity while Windows' native shadow was disabled. Its image quad could also
+cover lower-corner cutouts. A shared eight-point background/image contour now
+applies at intermediate percentages, without modifying the composition offset,
+PNG pixels, stacked geometry or the fully opaque/fully clear single-avatar paths.
+
+The public-UI regression selects 50%, checks all four underlay radii and every
+image vertex against the rounded contour at sizes 128/192/256/384, and checks
+white image colors, valid UVs and texture reuse. Returning to 100% or 0% retains
+the original single-avatar quad. RED53 reproduced corner radii 0 instead of 8.
+GREEN54 passed all 23 window tests and the one shadow-policy test, followed by
+formatting, offline all-target Clippy with warnings denied, and an offline native
+build. This is geometry/policy proof, not human visual or all-DPI compositor
+acceptance. The historical receiver-suite failure and native-review limitation
+remain unchanged.
 
 ## User-supplied PNG frame and compact popup
 
@@ -375,34 +507,3 @@ dragging, native menu usability, every display scale, or cross-platform parity.
 
 Continue with the [architecture study guide](architecture.md) for ownership and
 threading, or the [wire protocol](protocol.md) for exact input and trust limits.
-
-## Runtime presentation controls
-
-The runtime-only **No frame** option keeps the background setting independent,
-omits the artwork and packs avatar images with five logical pixels of
-transparent separation. Fully transparent backgrounds also use this compact
-layout. The source PNGs and original artwork are unchanged.
-
-**Vertical / Horizontal** provides exclusive stacking choices, initially
-Horizontal. Each selection preserves the chosen per-avatar size, cached
-textures, frame preference and clear five-point separators. The root window
-resizes to the selected axis; there is no wrapping.
-
-Unframed multi-avatar cards use an eight-point rounded contour shared by the
-background and image mesh. Convex draw-time clipping prevents opaque lower
-image corners from covering the cutouts. PNG pixels are not rewritten. This
-does not correct the separately reported per-card top-padding inconsistency.
-
-Background opacity adjusts only the background from 0 to 100 percent,
-initially 100. PNG pixels, labels and the options menu are not faded.
-Transparent background selects zero and restores the last nonzero percentage
-when unchecked. Every percentage below 100 uses unframed packing and disables
-the Windows native shadow. Settings reset on restart. The independent No frame
-preference is preserved for fully opaque mode.
-
-At intermediate percentages a single avatar also retains an eight-point
-background and image contour. The image is clipped at draw time so opaque
-lower corners cannot cover the cutouts; cached pixels, the composition offset
-and fully opaque/clear single-avatar geometry stay unchanged.
-
-Publication-slice validation runs the public window tests and the native-shadow policy test in an isolated copy. Historical receiver-suite failure and unresolved native review remain unchanged; inventory is not a full-suite pass claim.

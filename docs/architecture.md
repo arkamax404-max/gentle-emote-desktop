@@ -152,10 +152,14 @@ texels. Menu sizes (128, 192, 256, 384 logical pixels) are integer multiples of
 64; physical dimensions also depend on the display's scale factor.
 
 `native_options` requests a transparency-capable, fixed, frameless, always-on-top
-initial square with Glow rendering. It widens into a horizontal row of square
-avatar tiles. The size menu chooses each tile's side length, so native size is
-`count × tile size` by `tile size` (one tile while waiting). Resize commands are
-sent only when count or chosen size changes, not on image updates or heartbeats.
+initial square with Glow rendering. It grows into a row of square avatar tiles
+by default. **Vertical / Horizontal** selects either a column or a row using
+exclusive radio controls; the private orientation flag starts horizontal and
+resets on restart. The size menu chooses each tile's side length. Native size is
+`count × tile size` by `tile size` horizontally, or `tile size` by
+`count × tile size` vertically (one tile while waiting). Resize commands are
+sent only when count, chosen size or orientation changes, not on image updates
+or heartbeats.
 The options use `show_viewport_immediate` with a stable child viewport ID and an
 independent surface fitted to its controls with eight logical pixels of outer
 padding, rather than a fixed oversized rectangle. Rendering is synchronous on the UI
@@ -166,14 +170,19 @@ monitor-space inner origin plus the click position places the child; unsupported
 placement falls back to the native window manager. It is not an embedded egui
 popup clipped to a small avatar. Native focus/placement still needs OS checks.
 
-The row may exceed monitor width; no wrapping, scrolling, or overflow policy is
+The row or column may exceed monitor dimensions; no wrapping, scrolling, or overflow policy is
 provided. `EmoteApp::clear_color` clears to transparent RGBA;
-`show` paints an opaque black surface by default. The right-click checkbox
-**Transparent background** controls a private boolean initialized to `false`.
-Enabling it omits that black surface, so unused space and PNG alpha can reveal
-the desktop where the native compositor supports transparency. Disabling it
-restores black. The choice lives only in the app instance and resets on restart;
-it is not a saved setting and does not enable click-through.
+`show` paints an opaque black surface by default. A private integer percentage
+starts at 100; **Background opacity** adjusts it from 0 to 100 without tinting
+image meshes or changing cached pixels. Black underlay alpha is the percentage
+scaled and rounded to 0–255. The **Transparent background** checkbox selects 0;
+unchecking restores the last nonzero percentage, initially 100. The percentage
+and its restore value live only in the app instance and reset on restart.
+The options viewport remains opaque. At intermediate percentages, a single
+avatar's underlay and image mesh share the existing eight-point rounded contour,
+without relying on the Windows shadow. Fully opaque/clear single-avatar paths
+retain their original fit; stacked-card contours and spacing are unchanged.
+No click-through is enabled.
 
 Both modes use the same texture and full image UVs. The complete 64×64 image is
 uniformly fitted within each tile into a centered virtual 64×69 composition, with
@@ -181,13 +190,35 @@ five source rows of padding above it. That added padding becomes transparent whe
 black pixels already in the PNG, including the sender's five-row bottom gap,
 remain black. No color-keying, cropping, or pixel rewriting occurs, and toggling
 the background does not require re-uploading an unchanged frame. Multiple opaque
-tiles use the embedded `assets/avatar-frame.png` in place of the former bevel.
+tiles use the embedded `assets/avatar-frame.png` in place of the former bevel
+unless **No frame** is checked.
 One lazily loaded shared texture holds the cropped RGBA artwork. Its 851 × 851
 clear opening contains the complete virtual composition; the frame is painted
 above the avatar without covering labels. Uniform fitting preserves the frame's
-aspect ratio even during narrow transient resizes. Transparent tiles retain the
-previous four-point margin/image geometry, without a frame; a single avatar
-keeps the original borderless fit. See the [asset preparation contract](../assets/README.md).
+aspect ratio even during narrow transient resizes. Any background opacity below
+100 automatically uses the compact unframed layout, without modifying the
+independent **No frame** preference for opaque mode. A single avatar keeps the
+original borderless fit. See the
+[asset preparation contract](../assets/README.md).
+
+The independent **No frame** checkbox starts unchecked and resets on restart.
+When checked, or whenever background opacity is below 100%, multiple avatars
+omit the artwork and center the images
+as a group with five logical pixels between adjacent image edges along the
+selected axis, preserving image dimensions and the virtual composition.
+Horizontal image rows leave vertical strips; vertical columns leave horizontal
+strips. Separator strips are left
+unpainted over the transparent renderer clear, even with the remaining background
+opaque; no PNG pixels are rewritten. Cards use an eight-logical-pixel rounded
+outline for both background and image. The textured image mesh is intersected
+with the rounded convex card outline and its original image rectangle; UVs are
+derived from that unchanged rectangle. Rounding only the background is not
+sufficient: opaque image corners can otherwise paint over the lower cutouts.
+The draw mesh, not the cached texture, is clipped in both orientations, including
+when the remaining background is fully transparent. It does not change the
+background setting, root window dimensions or the single-avatar fit. During transient
+surfaces too narrow for the gaps, spacing is clamped rather than creating
+negative image sizes. Toggling either presentation option reuses cached textures.
 
 Drag, resize, and close are viewport commands asking the OS to act, not promises
 that every compositor implements them identically. Desktop alpha also depends
@@ -210,32 +241,3 @@ These are reading/prediction exercises, not additional product capabilities:
    and `from_rgba_unmultiplied`. Explain why the default still looks opaque, why
    enabling transparency cannot remove opaque black image pixels, and why neither
    mode enables click-through.
-
-## Runtime presentation controls
-
-The runtime-only **No frame** option keeps the background setting independent,
-omits the artwork and packs avatar images with five logical pixels of
-transparent separation. Fully transparent backgrounds also use this compact
-layout. The source PNGs and original artwork are unchanged.
-
-**Vertical / Horizontal** provides exclusive stacking choices, initially
-Horizontal. Each selection preserves the chosen per-avatar size, cached
-textures, frame preference and clear five-point separators. The root window
-resizes to the selected axis; there is no wrapping.
-
-Unframed multi-avatar cards use an eight-point rounded contour shared by the
-background and image mesh. Convex draw-time clipping prevents opaque lower
-image corners from covering the cutouts. PNG pixels are not rewritten. This
-does not correct the separately reported per-card top-padding inconsistency.
-
-Background opacity adjusts only the background from 0 to 100 percent,
-initially 100. PNG pixels, labels and the options menu are not faded.
-Transparent background selects zero and restores the last nonzero percentage
-when unchecked. Every percentage below 100 uses unframed packing and disables
-the Windows native shadow. Settings reset on restart. The independent No frame
-preference is preserved for fully opaque mode.
-
-At intermediate percentages a single avatar also retains an eight-point
-background and image contour. The image is clipped at draw time so opaque
-lower corners cannot cover the cutouts; cached pixels, the composition offset
-and fully opaque/clear single-avatar geometry stay unchanged.

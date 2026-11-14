@@ -35,7 +35,10 @@ Exact OS error codes and text are host-specific.
 | Start with no sender | Readable waiting message and control hints |
 | Primary-button drag | Ask the OS to move the window |
 | Right-click anywhere | Open a separate options window: per-avatar size 128, 192 (initial), 256, or 384 logical pixels |
-| Right-click → Transparent background | Toggle desktop transparency; off by default, for this session only |
+| Right-click → Transparent background | Set the background to 0%; uncheck to restore its last nonzero opacity |
+| Right-click → Background opacity | Adjust background-only opacity from 0–100%; initially 100%, for this session only |
+| Right-click → No frame | Hide decorative frames and leave transparent 5 px separators; preserve the remaining background; unchecked by default, for this session only |
+| Right-click → Vertical / Horizontal | Select Vertical or Horizontal stacking; Horizontal is initial, for this session only |
 | Right-click → Exit | Close the window and shut down the owned receiver |
 
 The options use an independent, opaque native window, so all controls remain
@@ -45,31 +48,45 @@ moving focus away after it has gained focus dismisses it. Exit closes the main
 avatar window and its receiver, not just the options. Native popup positioning
 and focus behavior depend on the window manager/compositor.
 
-Each avatar occupies a square tile; the window is one horizontal row with width
-`avatar count × chosen size` and height `chosen size`. With multiple avatars and
-an opaque background, each tile uses the supplied [cyberpunk PNG frame](assets/README.md)
+Each avatar occupies a square tile. **Horizontal** uses a row with width
+`avatar count × chosen size` and height `chosen size`; **Vertical** uses a column
+with width `chosen size` and height `avatar count × chosen size`. With multiple avatars and
+an opaque background and **No frame** unchecked, each tile uses the supplied [cyberpunk PNG frame](assets/README.md)
 instead of a beveled border. The complete avatar and labels fit within its clear
 opening; one embedded texture is reused across tiles with nearest-neighbor sampling.
 At 128 points the avatar image is approximately 92 points wide, so the artwork
 has more space than the old thin border. Transparent mode draws no frame and
-keeps its previous inner margin of up to four logical pixels and image fit.
-A single avatar keeps its original
+automatically uses the compact unframed layout instead of retaining extra tile spacing.
+Checking **No frame** reclaims the unframed image fit while keeping an opaque
+background opaque. Multiple images are centered as a group with **5 logical
+pixels between adjacent image edges** along the selected stacking axis. The
+separator strips are **always transparent**, even with an opaque background
+behind the avatars. Cards use **8 logical pixel rounded corners**, including
+the edges next to separators. The background and image draw mesh share that
+outline, so opaque PNG corners cannot cover it. Cached PNG pixels and label
+layout are unchanged. Window dimensions and single-avatar geometry stay unchanged. Transparency always hides frames, independently of that
+checkbox; changing transparency does not reset the **No frame** selection.
+The checkboxes, background opacity and stacking selection reset on restart. A single avatar keeps its original
 borderless layout. Startup waits in one
 192-pixel square. Physical dimensions also follow the OS display scale. Many
-sessions can make the row wider than the monitor; scrolling, wrapping, and other
+sessions can exceed the monitor's width or height; scrolling, wrapping, and other
 overflow policies are outside this change. The desktop adds black top padding
 equivalent to five source rows,
 balancing the sender image's existing five-row black bottom gap. The complete
 64×64 image is uniformly fitted within a virtual 64×69 composition, centered in
 each tile without cropping or changing the PNG. Nearest-neighbor filtering
-keeps texel edges sharp. The background is **opaque black by default**. Enable
-**Transparent background** in the right-click menu to make the added padding and
-unused surface transparent and blend PNG alpha over the desktop, subject to
-native compositor support. Original image pixels are not changed: opaque black
+keeps texel edges sharp. The background is **opaque black by default**. **Background opacity** adjusts
+only that background from 0–100%; images, embedded labels and the options menu
+are not faded. Intermediate opacity retains the 8-pixel rounded background
+and image contour, including with a single avatar. The **Transparent background** checkbox is a 0% shortcut;
+unchecking it restores the last nonzero slider value. Any opacity below 100%
+automatically omits the frame and uses the compact layout with 5-pixel clear
+gaps, without changing the saved **No frame** preference for fully opaque mode.
+PNG alpha blends over the desktop subject to native compositor support. Original image pixels are not changed: opaque black
 pixels (including the sender's bottom gap) stay black; this is not black-color
-removal. On Windows, transparent mode also disables the native undecorated
-window shadow and its thin perimeter; disabling the option restores black and
-the opaque window's shadow policy. Native visual verification of shadow removal
+removal. On Windows, any background opacity below 100% disables the native undecorated
+window shadow and its thin perimeter; only 100% restores the opaque shadow
+policy. Native visual verification of shadow removal
 is still required. The choice is session-only and
 resets on restart. There is no click-through, persistent state, background
 service, installer, or automatic sender configuration.
@@ -126,32 +143,3 @@ not human visual confirmation of topmost, drag, or menu behavior. Real sender
 transport was separately exercised; per-real-frame framebuffer capture was not.
 Human window checks and Windows/Linux execution remain outstanding. On Wayland,
 topmost placement and window moves depend on compositor support/policy.
-
-## Runtime presentation controls
-
-The runtime-only **No frame** option keeps the background setting independent,
-omits the artwork and packs avatar images with five logical pixels of
-transparent separation. Fully transparent backgrounds also use this compact
-layout. The source PNGs and original artwork are unchanged.
-
-**Vertical / Horizontal** provides exclusive stacking choices, initially
-Horizontal. Each selection preserves the chosen per-avatar size, cached
-textures, frame preference and clear five-point separators. The root window
-resizes to the selected axis; there is no wrapping.
-
-Unframed multi-avatar cards use an eight-point rounded contour shared by the
-background and image mesh. Convex draw-time clipping prevents opaque lower
-image corners from covering the cutouts. PNG pixels are not rewritten. This
-does not correct the separately reported per-card top-padding inconsistency.
-
-Background opacity adjusts only the background from 0 to 100 percent,
-initially 100. PNG pixels, labels and the options menu are not faded.
-Transparent background selects zero and restores the last nonzero percentage
-when unchecked. Every percentage below 100 uses unframed packing and disables
-the Windows native shadow. Settings reset on restart. The independent No frame
-preference is preserved for fully opaque mode.
-
-At intermediate percentages a single avatar also retains an eight-point
-background and image contour. The image is clipped at draw time so opaque
-lower corners cannot cover the cutouts; cached pixels, the composition offset
-and fully opaque/clear single-avatar geometry stay unchanged.
