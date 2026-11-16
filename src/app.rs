@@ -12,6 +12,11 @@ struct AvatarTexture {
     texture: TextureHandle,
 }
 
+struct ClockTexture {
+    step: i64,
+    texture: TextureHandle,
+}
+
 fn load_avatar_frame(ctx: &egui::Context) -> TextureHandle {
     // This trusted embedded asset is validated by the public rendering tests.
     let mut reader = png::Decoder::new(std::io::Cursor::new(include_bytes!(
@@ -198,8 +203,7 @@ pub struct EmoteApp {
     latest: LatestFrame,
     textures: HashMap<Option<String>, AvatarTexture>,
     frame_texture: Option<TextureHandle>,
-    clock_texture: Option<TextureHandle>,
-    clock_step: Option<i64>,
+    clocks: HashMap<Option<String>, ClockTexture>,
     /// Avatar-size slider step x1..x5: the avatar's 64-point image renders at
     /// that many points per source texel, and the canvas derives from that
     /// composition (image plus its one separation row) plus the visible
@@ -224,8 +228,7 @@ impl EmoteApp {
             _receiver: receiver,
             textures: HashMap::new(),
             frame_texture: None,
-            clock_texture: None,
-            clock_step: None,
+            clocks: HashMap::new(),
             size_step: 3,
             applied_size: Vec2::splat(192.0),
             background_opacity: 100,
@@ -249,38 +252,56 @@ impl EmoteApp {
     /// Shared by the native app and small embedding examples. Input and receiver
     /// notifications wake eframe; only clock mode schedules a 500ms repaint.
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        self.show_at(ui, chrono::Local::now().fixed_offset());
+    }
+
+    /// Draw at a supplied clock instant for deterministic embedding and pixel checks.
+    /// Native `show` continues to read the local wall clock once per draw.
+    pub fn show_at(&mut self, ui: &mut egui::Ui, now: chrono::DateTime<chrono::FixedOffset>) {
         // One atomic ordered snapshot; never hold the registry lock during GPU work.
         // Inactive final avatars intentionally use the same cache entry and pixels.
         let (snapshots, show_clock) = self.latest.display_snapshot();
-        // The internal pixel clock is shared by every clock tile and the
-        // global fallback: identical pixels, keyed on the 500ms animation
-        // step so a repaint between ticks never reuploads.
-        let any_clock = show_clock || snapshots.iter().any(|s| s.state == SessionState::Clock);
-        if any_clock {
-            let now = chrono::Local::now().fixed_offset();
-            let step = idle_clock_image::animation_step(now);
-            if self.clock_step != Some(step) {
-                let image = ColorImage::from_rgba_unmultiplied(
-                    [64, 64],
-                    &idle_clock_image::render(now).rgba,
-                );
-                match self.clock_texture.as_mut() {
-                    Some(texture) => texture.set(image, TextureOptions::NEAREST),
-                    None => {
-                        self.clock_texture = Some(ui.ctx().load_texture(
-                            "emote-idle-clock",
-                            image,
-                            TextureOptions::NEAREST,
-                        ));
-                    }
-                }
-                self.clock_step = Some(step);
+        // Cache only visible clock keys, bounded by the registry's snapshot cap.
+        // None is date-only (global/legacy), never the retained final session ID.
+        let clock_keys: Vec<_> = if show_clock {
+            vec![None]
+        } else {
+            snapshots
+                .iter()
+                .filter(|s| s.state == SessionState::Clock)
+                .map(|s| s.session_id.clone())
+                .collect()
+        };
+        let any_clock = !clock_keys.is_empty();
+        self.clocks.retain(|key, _| clock_keys.contains(key));
+        let step = idle_clock_image::animation_step(now);
+        for key in clock_keys {
+            if self
+                .clocks
+                .get(&key)
+                .is_some_and(|clock| clock.step == step)
+            {
+                continue;
+            }
+            let frame = key.as_deref().map_or_else(
+                || idle_clock_image::render(now),
+                |id| idle_clock_image::render_for_session(now, id),
+            );
+            let image = ColorImage::from_rgba_unmultiplied([64, 64], &frame.rgba);
+            if let Some(clock) = self.clocks.get_mut(&key) {
+                clock.texture.set(image, TextureOptions::NEAREST);
+                clock.step = step;
+            } else {
+                let texture =
+                    ui.ctx()
+                        .load_texture("emote-idle-clock", image, TextureOptions::NEAREST);
+                self.clocks.insert(key, ClockTexture { step, texture });
             }
         }
         self.textures
             .retain(|key, _| snapshots.iter().any(|snapshot| &snapshot.session_id == key));
         for snapshot in &snapshots {
-            // Clock-state sessions render the shared internal clock texture;
+            // Clock-state sessions render their keyed internal clock texture;
             // their received pixels stay validated in the registry but are
             // never uploaded, and returning to normal reuploads on demand.
             if snapshot.state == SessionState::Clock {
@@ -387,9 +408,7 @@ impl EmoteApp {
             // Idle sessions render the internal clock in their own tile while
             // ordinary neighbors keep their received pixels.
             let texture = if snapshot.state == SessionState::Clock {
-                self.clock_texture
-                    .as_ref()
-                    .expect("clock texture is prepared before painting clock tiles")
+                &self.clocks[&snapshot.session_id].texture
             } else {
                 &self.textures[&snapshot.session_id].texture
             };
@@ -472,10 +491,7 @@ impl EmoteApp {
         if show_clock {
             // Global fallback after the final explicit close: one internal
             // clock, no decorative frame (same close behavior as before).
-            let texture = self
-                .clock_texture
-                .as_ref()
-                .expect("clock texture is prepared before painting clock mode");
+            let texture = &self.clocks[&None].texture;
             let (_, image_rect) = snapped_physical_image_fit(rect, ui.ctx().pixels_per_point());
             if image_rect.is_positive() {
                 ui.painter().image(

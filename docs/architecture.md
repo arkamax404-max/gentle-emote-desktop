@@ -25,8 +25,8 @@ egui + Glow → frameless native window; opaque black by default, optional trans
 
 There is no pending-frame queue, avatar polling timer, persistence layer, or second
 metadata display. Sender labels are already part of the pixels. Only clock mode
-schedules a one-second GUI repaint, reading `chrono::Local::now()` once for local
-`HH:MM:SS` and `DD/MM/YYYY`, followed by `Waiting Agents...`. Chrono uses the
+schedules a 500ms GUI repaint, reading `chrono::Local::now()` once for local
+`HH:MM:SS` and the date/session header. Chrono uses the
 system time zone, including daylight-saving rules. The
 [protocol guide](protocol.md) is the reference for headers, response bodies,
 validation order, resource limits, and the local trust boundary.
@@ -113,8 +113,11 @@ ordered before session keys. The GUI uses registry ordering, never HashMap order
 A session whose latest frame carries `X-Emote-State: clock` renders the internal
 pixel clock (`idle_clock_image`, ported 1:1 from the canonical Lemmings renderer)
 in its own tile with the normal tile frame, never hiding active neighbors; any
-ordinary image state exits it. All clock tiles share one texture keyed on the
-500ms animation step, so repaints between ticks never reupload, and the window
+ordinary image state exits it. Each visible clock session has a stable texture
+handle and cached 500ms animation step, so repaints between ticks never reupload.
+Entries disappear when their clock tile disappears or returns to normal; the
+cache is bounded by visible registry keys. Global fallback and legacy clocks use
+a date-only `None` key, never a retained last session ID. The window
 schedules a 500ms repaint only while a clock is visible. The final-close clock
 renders full-surface without a decorative frame. Received clock-state PNG bodies
 stay validated and stored, but their pixels are not uploaded while the internal
@@ -130,8 +133,10 @@ At most 16 fixed cells fit: `16×3 + 15×1 = 63` pixels. Longer IDs show their
 first 13 characters plus three static dots, never scrolling. ID-only glyphs do
 not change canonical date/time typography, even for negative years; all pixels
 outside the header still come from `render(now)`, including 500ms walkers.
-**This additive API is not yet wired into the app or its shared clock cache**;
-the running app still uses the date-only renderer described above.
+The app uses this renderer for identified clock tiles; global and legacy clocks
+keep `render(now)`. Additive `EmoteApp::show_at(ui, now)` exposes the same drawing
+path at a deterministic instant for embedding/pixel checks; `show(ui)` supplies
+local wall time. Neither API changes geometry, framing, or avatar uploads.
 
 `LatestFrame::get()` remains a compatibility API returning the last accepted image
 from any session (initially `None`), unaffected by lifecycle-only traffic. Both

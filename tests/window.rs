@@ -104,8 +104,15 @@ fn session_request_state(
     let state = state
         .map(|value| format!("X-Emote-State: {value}\r\n"))
         .unwrap_or_default();
+    let identity = if id.is_empty() {
+        String::new() // Exercise the public legacy singleton without identity headers.
+    } else {
+        format!(
+            "X-Emote-Session-Id: {id}\r\nX-Emote-Stream-Id: stream-{id}\r\nX-Emote-Sequence: {seq}\r\n"
+        )
+    };
     let mut socket = TcpStream::connect(address).unwrap();
-    write!(socket, "POST /{kind} HTTP/1.1\r\nHost: localhost\r\nContent-Type: image/png\r\nX-Emote-Version: 1\r\n{state}X-Emote-Session-Id: {id}\r\nX-Emote-Stream-Id: stream-{id}\r\nX-Emote-Sequence: {seq}\r\nContent-Length: {}\r\n\r\n", png.len()).unwrap();
+    write!(socket, "POST /{kind} HTTP/1.1\r\nHost: localhost\r\nContent-Type: image/png\r\nX-Emote-Version: 1\r\n{state}{identity}Content-Length: {}\r\n\r\n", png.len()).unwrap();
     socket.write_all(&png).unwrap();
     let mut response = String::new();
     socket.read_to_string(&mut response).unwrap();
@@ -1996,6 +2003,162 @@ fn per_session_clock_tiles_run_alongside_normal_avatars_without_hiding_them() {
         "returning to normal uploads only that session's pixels"
     );
     drop(restored);
+}
+
+fn clock_at(ctx: &egui::Context, app: &mut EmoteApp, millis: i64) -> Output {
+    let now = chrono::DateTime::from_timestamp_millis(millis)
+        .unwrap()
+        .fixed_offset();
+    let mut raw = input(vec![]);
+    raw.screen_rect = Some(egui::Rect::from_min_size(
+        Pos2::ZERO,
+        Vec2::new(576.0, 192.0),
+    ));
+    Output::new(ctx, ctx.run_ui(raw, |ui| app.show_at(ui, now)))
+}
+
+fn assert_uploaded_pixels(output: &Output, id: egui::TextureId, rgba: &[u8]) {
+    let delta = output.textures_delta.set[&id].last().unwrap();
+    assert_eq!(delta.options, egui::TextureOptions::NEAREST);
+    assert_eq!(delta.pos, None);
+    assert_eq!(delta.image.size(), [64, 64]);
+    let egui::ImageData::Color(image) = &delta.image;
+    let expected = egui::ColorImage::from_rgba_unmultiplied([64, 64], rgba);
+    assert_eq!(
+        image.pixels, expected.pixels,
+        "uploaded RGBA must match the selected renderer"
+    );
+}
+
+fn assert_clock_pixels(output: &Output, id: egui::TextureId, millis: i64, session: Option<&str>) {
+    use gentle_emote_desktop::idle_clock_image::{render, render_for_session};
+    let now = chrono::DateTime::from_timestamp_millis(millis)
+        .unwrap()
+        .fixed_offset();
+    let expected = session.map_or_else(|| render(now), |session| render_for_session(now, session));
+    assert_uploaded_pixels(output, id, &expected.rgba);
+}
+
+#[test]
+fn session_clock_headers_are_independent_step_cached_and_preserve_normal_neighbor() {
+    let (ctx, mut app, address) = setup();
+    let long = "LongSession-0123456789";
+    session_request_state(address, "a", 1, "emote", 42, Some("clock"));
+    session_request_state(address, long, 1, "emote", 84, Some("clock"));
+    session_request(address, "normal", 1, "emote", 126);
+    let initial = clock_at(&ctx, &mut app, 0);
+    let clocks = clock_meshes(&initial);
+    let neighbor = avatars(&initial);
+    let borders = frames(&initial);
+    assert_eq!(clocks.len(), 2);
+    assert_eq!(neighbor.len(), 1);
+    assert_ne!(clocks[0].0, clocks[1].0, "each ID needs independent pixels");
+    for (index, session) in ["a", long].into_iter().enumerate() {
+        assert_clock_pixels(&initial, clocks[index].0, 0, Some(session));
+    }
+    assert_uploaded_pixels(&initial, neighbor[0].0, &[126, 7, 9, 255].repeat(64 * 64));
+    drop(initial);
+    for millis in [499, 5000, 5499, 10000] {
+        let output = clock_at(&ctx, &mut app, millis);
+        assert_eq!(clock_meshes(&output), clocks);
+        assert_eq!(avatars(&output), neighbor);
+        assert_eq!(frames(&output), borders);
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .is_empty()
+        );
+        if millis == 499 || millis == 5499 {
+            assert!(
+                output.textures_delta.set.is_empty(),
+                "same 500ms step must not upload"
+            );
+        } else {
+            assert_eq!(clock_uploads(&output).len(), 2);
+            for (index, session) in ["a", long].into_iter().enumerate() {
+                assert_clock_pixels(&output, clocks[index].0, millis, Some(session));
+            }
+            assert!(!output.textures_delta.set.contains_key(&neighbor[0].0));
+        }
+    }
+}
+
+#[test]
+fn session_clock_cache_releases_on_state_return_and_disappearance() {
+    let (ctx, mut app, address) = setup();
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "b", 1, "emote", 84);
+    let initial = clock_at(&ctx, &mut app, 5000);
+    let original = avatars(&initial);
+    drop(initial);
+    session_request_state(address, "a", 2, "emote", 99, Some("clock"));
+    let clock = clock_at(&ctx, &mut app, 5000);
+    let old_clock = clock_meshes(&clock)[0].0;
+    assert_eq!(
+        clock_uploads(&clock).len(),
+        1,
+        "do not upload received clock PNG"
+    );
+    assert_clock_pixels(&clock, old_clock, 5000, Some("a"));
+    drop(clock);
+    session_request(address, "a", 3, "emote", 126);
+    let normal = clock_at(&ctx, &mut app, 5000);
+    assert_eq!(
+        avatars(&normal),
+        original,
+        "reuse the ordinary avatar handles and geometry"
+    );
+    assert!(clock_meshes(&normal).is_empty());
+    assert!(normal.textures_delta.free.contains(&old_clock));
+    assert_eq!(clock_uploads(&normal).len(), 1);
+    assert_uploaded_pixels(&normal, original[0].0, &[126, 7, 9, 255].repeat(64 * 64));
+    drop(normal);
+    session_request_state(address, "a", 4, "emote", 99, Some("clock"));
+    let restarted = clock_at(&ctx, &mut app, 5000);
+    let new_clock = clock_meshes(&restarted)[0].0;
+    assert_ne!(new_clock, old_clock);
+    assert_clock_pixels(&restarted, new_clock, 5000, Some("a"));
+    drop(restarted);
+    session_request(address, "a", 5, "emote/close", 0);
+    let gone = clock_at(&ctx, &mut app, 5000);
+    assert!(clock_meshes(&gone).is_empty());
+    assert!(gone.textures_delta.free.contains(&new_clock));
+    assert_eq!(avatars(&gone)[0].0, original[1].0);
+    assert!(gone.textures_delta.set.is_empty());
+}
+
+#[test]
+fn session_clock_final_close_uses_date_only_and_releases_retained_id_cache() {
+    let (ctx, mut app, address) = setup();
+    session_request_state(address, "LastID", 1, "emote", 42, Some("clock"));
+    let session = clock_at(&ctx, &mut app, 5000);
+    let old = clock_meshes(&session)[0].0;
+    assert_clock_pixels(&session, old, 5000, Some("LastID"));
+    drop(session);
+    session_request(address, "LastID", 2, "emote/close", 0);
+    let global = clock_at(&ctx, &mut app, 5000);
+    let fallback = clock_meshes(&global)[0].0;
+    assert_ne!(fallback, old);
+    assert!(global.textures_delta.free.contains(&old));
+    assert_clock_pixels(&global, fallback, 5000, None);
+    assert!(avatars(&global).is_empty());
+    assert!(frames(&global).is_empty());
+    drop(global);
+    session_request(address, "new", 1, "emote", 84);
+    let replaced = clock_at(&ctx, &mut app, 5000);
+    assert!(replaced.textures_delta.free.contains(&fallback));
+    assert!(clock_meshes(&replaced).is_empty());
+}
+
+#[test]
+fn session_clock_legacy_without_id_keeps_date_header() {
+    let (ctx, mut app, address) = setup();
+    session_request_state(address, "", 1, "emote", 42, Some("clock"));
+    let legacy = clock_at(&ctx, &mut app, 5000);
+    assert_eq!(clock_meshes(&legacy).len(), 1);
+    assert_clock_pixels(&legacy, clock_meshes(&legacy)[0].0, 5000, None);
+    assert!(avatars(&legacy).is_empty());
+    assert_eq!(clock_uploads(&legacy).len(), 1);
 }
 
 #[test]

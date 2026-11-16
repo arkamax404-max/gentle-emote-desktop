@@ -132,7 +132,10 @@ The desktop renders that clock internally, so senders activate it per session
 with `X-Emote-State: clock` on the ordinary image endpoint; any ordinary image
 state (or absent/unknown state value) restores the received pixels. An idle
 session's clock tile never hides active neighbors, keeps the normal tile frame,
-and the surface repaints every 500ms while any clock is visible (walkers advance
+and alternates its header every five seconds between the local date and its
+case-sensitive session ID. IDs longer than 16 characters show the first 13 plus
+three static dots, never scrolling. Global fallback and legacy clocks without an
+ID keep the date-only header. The surface repaints every 500ms while any clock is visible (walkers advance
 each 500ms tick; time glyphs stay second-stable). The final-close fallback clock
 renders without a frame, as before. A new or reactivated session replaces
 either clock; drag and options remain available. Startup still shows Waiting, and
