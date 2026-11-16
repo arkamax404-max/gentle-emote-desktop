@@ -729,10 +729,10 @@ fn transparent_mode_uses_unframed_layout_and_preserves_opaque_frame_choice() {
                 assert_eq!(images.len(), count);
                 assert!(frames(&output).is_empty());
                 assert!(
-                    !output
-                        .shapes
-                        .iter()
-                        .any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.fill.a()>0))
+                    output.shapes.iter().any(|s| matches!(&s.shape,
+                        egui::Shape::Rect(r) if r.fill == egui::Color32::from_black_alpha(140)
+                    )),
+                    "toggle-on default paints 45% transparency (opacity 55, alpha 140)"
                 );
                 let cards = expected_unframed_cards(
                     egui::Rect::from_min_size(Pos2::ZERO, dimensions(count, size)),
@@ -991,10 +991,10 @@ fn stacking_selector_switches_axes_and_preserves_frames_and_transparent_gaps() {
     toggle_background(&ctx, &mut app);
     let transparent = render(&mut app, 2, 192.0);
     assert!(
-        !transparent
-            .shapes
-            .iter()
-            .any(|s| matches!(&s.shape,egui::Shape::Rect(r) if r.fill.a()>0))
+        transparent.shapes.iter().any(|s| matches!(&s.shape,
+            egui::Shape::Rect(r) if r.fill == egui::Color32::from_black_alpha(140)
+        )),
+        "toggle-on default paints 45% transparency (opacity 55, alpha 140)"
     );
     let clear_images = avatars(&transparent);
     assert!(
@@ -1997,6 +1997,51 @@ fn background_toggle_round_trip_and_transparent_renderer_clear() {
     assert!(!has_black_background(&step(&ctx, &mut app, vec![])));
     toggle_background(&ctx, &mut app);
     assert!(has_black_background(&step(&ctx, &mut app, vec![])));
+}
+
+#[test]
+fn transparent_toggle_defaults_to_45_percent_displayed_transparency() {
+    let (ctx, mut app, _) = setup();
+    toggle_background(&ctx, &mut app);
+    // Checked toggle-on selects 45% displayed transparency: opacity 55,
+    // black underlay alpha 140 (rounded 55 * 255 / 100).
+    let output = step(&ctx, &mut app, vec![]);
+    assert!(
+        output.shapes.iter().any(|s| matches!(&s.shape,
+            egui::Shape::Rect(r) if r.fill == egui::Color32::from_black_alpha(140)
+        )),
+        "toggle-on must default to 45% displayed transparency (opacity 55, alpha 140)"
+    );
+    // The menu slider displays exactly 45% with the checkbox still checked.
+    select_menu_option(&ctx, &mut app, "Background transparency");
+    let child = menu::take();
+    assert!(menu::checked(&child, "Transparent background"));
+    for text in ["45", "%"] {
+        assert!(
+            child
+                .shapes
+                .iter()
+                .any(|s| matches!(&s.shape, egui::Shape::Text(t)
+                if t.galley.text() == text)),
+            "slider must display 45% after enabling transparent mode"
+        );
+    }
+    menu::events(vec![Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    }]);
+    step(&ctx, &mut app, vec![]);
+    // The manual slider remains adjustable from the 45% default.
+    set_background_transparency(&ctx, &mut app, 0.5, true);
+    // Toggle-off still restores the fully opaque background.
+    toggle_background(&ctx, &mut app);
+    assert!(
+        has_black_background(&step(&ctx, &mut app, vec![])),
+        "toggle-off must restore the fully opaque background"
+    );
 }
 
 #[test]

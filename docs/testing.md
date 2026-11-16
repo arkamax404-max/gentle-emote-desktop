@@ -226,8 +226,8 @@ acceptance of this corrected eight-pixel complete contour is still pending.
 ### Independent transparency control (current behavior)
 
 **Transparent background** is unchecked by default. **Background transparency**
-is disabled at 0% (opaque) until checked; checking initially selects 100%
-(invisible). Checked-at-zero and partial values keep the checkbox checked.
+is disabled at 0% (opaque) until checked; checking initially selects 45%
+(opacity 55, alpha 140). Checked-at-zero and partial values keep the checkbox checked.
 Unchecking always resets to opaque 0% and disables the slider, not a remembered
 partial percentage. Only background paint fades. Actual opacity controls frames
 and native shadow; checked-at-zero may still show the frame when **No frame**

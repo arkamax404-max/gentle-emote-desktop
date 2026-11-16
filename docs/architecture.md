@@ -196,7 +196,7 @@ provided. `EmoteApp::clear_color` clears to transparent RGBA;
 `show` paints an opaque black surface by default. A private integer percentage
 starts at 100 (opaque). The independent **Transparent background** flag starts
 false, disabling **Background transparency** at 0%. Checking it initially selects
-100% transparency; the enabled slider converts transparency to opacity as
+45% transparency (opacity 55); the enabled slider converts transparency to opacity as
 `100 - transparency`, without tinting image meshes or changing cached pixels.
 Black underlay alpha is opacity scaled and rounded to 0–255. Zero or partial
 transparency does not uncheck the flag. Unchecking forces opacity to 100 and

@@ -550,7 +550,9 @@ impl EmoteApp {
                         ui.checkbox(&mut self.transparent_background, "Transparent background");
                     content_width = content_width.max(transparency.rect.width());
                     if transparency.changed() {
-                        self.background_opacity = if self.transparent_background { 0 } else { 100 };
+                        // Default to 45% displayed transparency (opacity 55)
+                        // instead of full invisibility.
+                        self.background_opacity = if self.transparent_background { 55 } else { 100 };
                         self.menu_open = false;
                     }
                     let label = ui.label("Background transparency");

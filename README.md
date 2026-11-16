@@ -35,7 +35,7 @@ Exact OS error codes and text are host-specific.
 | Start with no sender | Readable waiting message and control hints |
 | Primary-button drag | Ask the OS to move the window |
 | Right-click anywhere | Open a separate options window: per-avatar size 128, 192 (initial), 256, or 384 logical pixels |
-| Right-click → Transparent background | Enable the slider, initially at 100% transparency; uncheck to reset to opaque (0%) and disable the slider |
+| Right-click → Transparent background | Enable the slider, initially at 45% transparency (opacity 55); uncheck to reset to opaque (0%) and disable the slider |
 | Right-click → Background transparency | While checked, adjust background-only transparency: 0% opaque, 100% invisible; for this session only |
 | Right-click → No frame | Hide decorative frames and leave transparent 5 px separators; preserve the remaining background; unchecked by default, for this session only |
 | Right-click → Vertical / Horizontal | Select Vertical or Horizontal stacking; Horizontal is initial, for this session only |
@@ -87,7 +87,7 @@ smaller than 64×65 physical pixels fall back to a fractional contain fit.
 Nearest-neighbor filtering keeps texel edges sharp. The background is
 **opaque black by default**, with
 **Transparent background** unchecked and its slider disabled at 0% transparency.
-Checking it enables **Background transparency**, initially at 100% (invisible).
+Checking it enables **Background transparency**, initially at 45% (opacity 55).
 The slider changes only the background; images, embedded labels and the options
 menu are not faded. Intermediate transparency retains the 8-pixel rounded background
 and image contour, including with a single avatar. The checkbox stays checked
