@@ -457,7 +457,20 @@ scaffold compiled, then failed three functional assertions (independent handles
 and session RGBA); legacy and the existing mixed-tile regression passed. After
 keyed-cache wiring all five focused tests passed. Logs are under
 `target/compact-clock-session-header/session-cache-{red,green}.log`.
-These checks do not establish compact clock layout or native visual acceptance.
+These header/cache checks do not establish compact clock layout or native visual acceptance.
+
+### Compact clock geometry checks
+
+Three `compact_clock_*` public HTTP/headless-egui tests cover mixed-neighbor
+mesh/UV/texture/background preservation, compact square underlays and full-UV
+clock quads, all-clock native size requests and explicitly applied viewports,
+and restoration of padded mixed sizing. The matrix exercises both orientations,
+steps x1/x3/x5, DPI 1/1.25/1.61, and opaque No-frame/partial/zero backgrounds.
+Single/global checks preserve date-only fallback, explicit framed-clock preference,
+root drag and menu access. Expected compact bounds come from observed image
+bounds, not a production compact-geometry helper. Logs use
+`target/compact-clock-session-header/compact-*.log`. These tests inspect viewport
+commands, not OS-applied sizing, compositor output or human visual acceptance.
 
 ## Understand the test-only TCP reset correction
 

@@ -119,7 +119,7 @@ Entries disappear when their clock tile disappears or returns to normal; the
 cache is bounded by visible registry keys. Global fallback and legacy clocks use
 a date-only `None` key, never a retained last session ID. The window
 schedules a 500ms repaint only while a clock is visible. The final-close clock
-renders full-surface without a decorative frame. Received clock-state PNG bodies
+renders a compact composition without a decorative frame. Received clock-state PNG bodies
 stay validated and stored, but their pixels are not uploaded while the internal
 clock is shown.
 
@@ -288,6 +288,17 @@ when the remaining background is fully transparent. It does not change the
 background setting, root window dimensions or the unframed single-avatar fit. During transient
 surfaces too narrow for the gaps, spacing is clamped rather than creating
 negative image sizes. Toggling either presentation option reuses cached textures.
+
+Unframed clocks are the exception to avatar card contours: the existing snapped
+fit supplies both the raw full-UV image quad and its square 64×65 background.
+The underlay starts one fitted source row above the image, not at the outer card.
+The outer background pass skips those clocks; opacity conversion is unchanged.
+Mixed groups retain every old slot/inset and normal-avatar origin. Only nonempty
+all-Clock snapshots (including retained inactive clocks) remove the four-point
+inset and eight-point native card allowance. Their cards are `64s × 65s`, with
+five-point gaps; normal/mixed/framed/waiting canvas rules remain unchanged.
+Global fallback is handled separately from retained snapshot state and uses the
+same compact paint without a frame. No cache, bitmap or slider state is changed.
 
 Drag, resize, and close are viewport commands asking the OS to act, not promises
 that every compositor implements them identically. Desktop alpha also depends

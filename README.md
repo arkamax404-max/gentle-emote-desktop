@@ -131,11 +131,23 @@ rendered Lemmings pixel clock: the same 64x64 artwork as the sender display
 The desktop renders that clock internally, so senders activate it per session
 with `X-Emote-State: clock` on the ordinary image endpoint; any ordinary image
 state (or absent/unknown state value) restores the received pixels. An idle
-session's clock tile never hides active neighbors, keeps the normal tile frame,
+session's clock tile never hides active neighbors, honors the selected frame,
 and alternates its header every five seconds between the local date and its
 case-sensitive session ID. IDs longer than 16 characters show the first 13 plus
 three static dots, never scrolling. Global fallback and legacy clocks without an
-ID keep the date-only header. The surface repaints every 500ms while any clock is visible (walkers advance
+ID keep the date-only header.
+
+Unframed clocks have square corners and a background bounded exactly by their
+snapped 64×65 composition (including the blank row above the image), preserving
+the full-width bottom path. Background opacity still applies, with no underlay
+at zero. Mixed clock/avatar groups retain the ordinary uniform slots, insets,
+canvas and avatar geometry. When every visible tile is a clock, unframed groups
+omit the four-point card insets: at slider step `s`, `n` clocks request
+`(n×64s + (n−1)×5, 65s)` horizontally or `(64s, n×65s + (n−1)×5)` vertically.
+The selected scale never changes. Opaque clocks still use the selected decorative
+frame unless **No frame** is checked; the global fallback remains unframed.
+
+The surface repaints every 500ms while any clock is visible (walkers advance
 each 500ms tick; time glyphs stay second-stable). The final-close fallback clock
 renders without a frame, as before. A new or reactivated session replaces
 either clock; drag and options remain available. Startup still shows Waiting, and

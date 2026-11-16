@@ -183,6 +183,31 @@ fn paint_rounded_card_image(
     painter.add(egui::Shape::mesh(mesh));
 }
 
+/// Clock artwork includes a full-width path: neither its image nor its
+/// composition background uses the ordinary avatar's rounded contour.
+fn paint_clock_image(
+    painter: &egui::Painter,
+    texture: egui::TextureId,
+    image: egui::Rect,
+    scale: f32,
+    opacity: u8,
+) {
+    if !image.is_positive() {
+        return;
+    }
+    if opacity > 0 {
+        let composition = egui::Rect::from_min_max(image.min - egui::vec2(0.0, scale), image.max);
+        let alpha = ((u16::from(opacity) * 255 + 50) / 100) as u8;
+        painter.rect_filled(composition, 0.0, egui::Color32::from_black_alpha(alpha));
+    }
+    painter.image(
+        texture,
+        image,
+        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+}
+
 pub fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -352,6 +377,8 @@ impl EmoteApp {
         // The waiting surface has no artwork; every actual opaque avatar may
         // use the same frame, including the single-avatar case.
         let framed = !show_clock && !snapshots.is_empty() && !unframed;
+        let all_clocks =
+            !snapshots.is_empty() && snapshots.iter().all(|s| s.state == SessionState::Clock);
         let frame = if framed {
             Some(
                 self.frame_texture
@@ -395,11 +422,13 @@ impl EmoteApp {
             let alpha = ((u16::from(self.background_opacity) * 255 + 50) / 100) as u8;
             let fill = egui::Color32::from_black_alpha(alpha);
             if let Some((span, gap)) = packed_layout {
-                for index in 0..count {
-                    ui.painter()
-                        .rect_filled(card_rect(span, gap, index), radius, fill);
+                for (index, snapshot) in snapshots.iter().enumerate() {
+                    if snapshot.state != SessionState::Clock {
+                        ui.painter()
+                            .rect_filled(card_rect(span, gap, index), radius, fill);
+                    }
                 }
-            } else {
+            } else if !show_clock && !(unframed && all_clocks) {
                 ui.painter()
                     .rect_filled(rect, if partially_opaque { radius } else { 0.0 }, fill);
             }
@@ -430,7 +459,13 @@ impl EmoteApp {
             let rect = egui::Rect::from_min_size(rect.min + offset, size);
             let (rect, decoration) = if let Some((span, gap)) = packed_layout {
                 let card = card_rect(span, gap, index);
-                let padding = 4.0_f32.min(card.width().min(card.height()) * 0.25);
+                // Only a wholly clock composition reclaims native card insets.
+                // Mixed slots keep exactly the ordinary avatar fit, even at DPI.
+                let padding = if all_clocks {
+                    0.0
+                } else {
+                    4.0_f32.min(card.width().min(card.height()) * 0.25)
+                };
                 (card.shrink(padding), None)
             } else if let Some(frame) = &frame {
                 let artwork = frame.size_vec2();
@@ -455,11 +490,19 @@ impl EmoteApp {
             // Keep one source row of padding above the complete image, scaled
             // in whole physical pixels with snapped edges so NEAREST keeps
             // square pixels at any display scale factor.
-            let (_, image_rect) = snapped_physical_image_fit(rect, ui.ctx().pixels_per_point());
+            let (scale, image_rect) = snapped_physical_image_fit(rect, ui.ctx().pixels_per_point());
             if !image_rect.is_positive() {
                 continue;
             }
-            if let Some((span, gap)) = packed_layout {
+            if unframed && snapshot.state == SessionState::Clock {
+                paint_clock_image(
+                    ui.painter(),
+                    texture.id(),
+                    image_rect,
+                    scale,
+                    self.background_opacity,
+                );
+            } else if let Some((span, gap)) = packed_layout {
                 paint_rounded_card_image(
                     ui.painter(),
                     texture.id(),
@@ -492,15 +535,14 @@ impl EmoteApp {
             // Global fallback after the final explicit close: one internal
             // clock, no decorative frame (same close behavior as before).
             let texture = &self.clocks[&None].texture;
-            let (_, image_rect) = snapped_physical_image_fit(rect, ui.ctx().pixels_per_point());
-            if image_rect.is_positive() {
-                ui.painter().image(
-                    texture.id(),
-                    image_rect,
-                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-            }
+            let (scale, image_rect) = snapped_physical_image_fit(rect, ui.ctx().pixels_per_point());
+            paint_clock_image(
+                ui.painter(),
+                texture.id(),
+                image_rect,
+                scale,
+                self.background_opacity,
+            );
         } else if snapshots.is_empty() {
             ui.painter().text(
                 rect.center(),
@@ -670,7 +712,11 @@ impl EmoteApp {
         } else if unframed && count > 1 {
             // Packed cards budget their real four-point insets and five-point
             // gaps instead of deducting them from the image.
-            let card = tile + Vec2::splat(8.0);
+            let card = if all_clocks {
+                tile
+            } else {
+                tile + Vec2::splat(8.0)
+            };
             if vertical {
                 Vec2::new(card.x, count as f32 * card.y + (count - 1) as f32 * 5.0)
             } else {

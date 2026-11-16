@@ -2017,6 +2017,244 @@ fn clock_at(ctx: &egui::Context, app: &mut EmoteApp, millis: i64) -> Output {
     Output::new(ctx, ctx.run_ui(raw, |ui| app.show_at(ui, now)))
 }
 
+// Fixed time keeps geometry checks independent of animation uploads.
+fn compact_surface(ctx: &egui::Context, app: &mut EmoteApp, size: Vec2) -> Output {
+    let mut raw = input(vec![]);
+    raw.screen_rect = Some(egui::Rect::from_min_size(Pos2::ZERO, size));
+    let now = chrono::DateTime::from_timestamp_millis(5000)
+        .unwrap()
+        .fixed_offset();
+    Output::new(ctx, ctx.run_ui(raw, |ui| app.show_at(ui, now)))
+}
+
+fn compact_backgrounds(output: &Output) -> Vec<egui::epaint::RectShape> {
+    output
+        .shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::Shape::Rect(r) if r.fill.a() > 0 => Some(r.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn assert_compact_clock(output: &Output, opacity: u8) {
+    let backgrounds = compact_backgrounds(output);
+    for (id, image) in clock_meshes(output) {
+        let mesh = avatar_mesh(output, id);
+        assert_eq!(mesh.vertices.len(), 4, "clock must retain its raw quad");
+        for uv in [
+            Pos2::ZERO,
+            Pos2::new(1.0, 0.0),
+            Pos2::new(0.0, 1.0),
+            Pos2::new(1.0, 1.0),
+        ] {
+            assert!(mesh.vertices.iter().any(|v| v.uv == uv));
+        }
+        let composition =
+            egui::Rect::from_min_max(image.min - Vec2::new(0.0, image.width() / 64.0), image.max);
+        if opacity > 0 {
+            let bg = backgrounds
+                .iter()
+                .find(|r| {
+                    (r.rect.min - composition.min).length() < 0.001
+                        && (r.rect.max - composition.max).length() < 0.001
+                })
+                .expect("clock background must fit the exact 64x65 composition");
+            assert_eq!(bg.corner_radius, egui::CornerRadius::ZERO);
+            assert_eq!(bg.fill.a(), ((u16::from(opacity) * 255 + 50) / 100) as u8);
+        } else {
+            assert!(backgrounds.is_empty());
+        }
+    }
+}
+
+#[test]
+fn compact_clock_mixed_preserves_neighbor_and_inset_fit() {
+    for vertical in [false, true] {
+        for scale in [1, 3, 5] {
+            for opacity in [100, 50, 0] {
+                let (ctx, mut app, address) = setup();
+                session_request(address, "a", 1, "emote", 42);
+                session_request(address, "b", 1, "emote", 84);
+                step(&ctx, &mut app, vec![]);
+                toggle_option(&ctx, &mut app, "No frame");
+                if vertical {
+                    select_menu_option(&ctx, &mut app, "Vertical");
+                }
+                set_size_step(&ctx, &mut app, scale);
+                if opacity < 100 {
+                    set_background_opacity(&ctx, &mut app, f32::from(opacity) / 100.0);
+                }
+                let card = Vec2::new(64.0, 65.0) * f32::from(scale) + Vec2::splat(8.0);
+                let size = if vertical {
+                    Vec2::new(card.x, 2.0 * card.y + 5.0)
+                } else {
+                    Vec2::new(2.0 * card.x + 5.0, card.y)
+                };
+                for ppp in [1.0, 1.25, 1.61] {
+                    ctx.set_pixels_per_point(ppp);
+                    step(&ctx, &mut app, vec![]);
+                    session_request(address, "a", (ppp * 100.0) as u64 * 2, "emote", 42);
+                    let before = compact_surface(&ctx, &mut app, size);
+                    let images = avatars(&before);
+                    let neighbor = avatar_mesh(&before, images[1].0);
+                    let backgrounds = compact_backgrounds(&before);
+                    session_request_state(
+                        address,
+                        "a",
+                        (ppp * 100.0) as u64 * 2 + 1,
+                        "emote",
+                        42,
+                        Some("clock"),
+                    );
+                    let after = compact_surface(&ctx, &mut app, size);
+                    assert_eq!(avatars(&after), vec![images[1]]);
+                    assert_eq!(avatar_mesh(&after, images[1].0), neighbor);
+                    let clock = clock_meshes(&after)[0].1;
+                    // Rounded normal meshes reconstruct their bounds through
+                    // polygon clipping; allow only floating-point roundoff.
+                    assert!((clock.min - images[0].1.min).length() < 0.001);
+                    assert!((clock.max - images[0].1.max).length() < 0.001);
+                    assert_compact_clock(&after, opacity);
+                    if opacity > 0 {
+                        assert!(compact_backgrounds(&after).contains(&backgrounds[1]));
+                    }
+                    assert!(
+                        after.viewport_output[&egui::ViewportId::ROOT]
+                            .commands
+                            .is_empty()
+                    );
+                    assert!(!after.textures_delta.set.contains_key(&images[1].0));
+                    drop(after);
+                    let stable = compact_surface(&ctx, &mut app, size);
+                    assert!(stable.textures_delta.set.is_empty());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn compact_clock_all_clock_native_size_and_normal_restore() {
+    for vertical in [false, true] {
+        for scale in [1, 3, 5] {
+            let (ctx, mut app, address) = setup();
+            session_request_state(address, "a", 1, "emote", 42, Some("clock"));
+            session_request_state(address, "b", 1, "emote", 84, Some("clock"));
+            step(&ctx, &mut app, vec![]);
+            // Explicit opaque frame choice remains authoritative.
+            assert_eq!(frames(&step(&ctx, &mut app, vec![])).len(), 2);
+            toggle_option(&ctx, &mut app, "No frame");
+            if vertical {
+                select_menu_option(&ctx, &mut app, "Vertical");
+            }
+            set_size_step(&ctx, &mut app, scale);
+            let tile = Vec2::new(64.0, 65.0) * f32::from(scale);
+            let extent = |card: Vec2| {
+                if vertical {
+                    Vec2::new(card.x, 2.0 * card.y + 5.0)
+                } else {
+                    Vec2::new(2.0 * card.x + 5.0, card.y)
+                }
+            };
+            let size = extent(tile);
+            for ppp in [1.0, 1.25, 1.61] {
+                ctx.set_pixels_per_point(ppp);
+                step(&ctx, &mut app, vec![]);
+                session_request(address, "a", (ppp * 100.0) as u64 * 2, "emote", 42);
+                let mixed = compact_surface(&ctx, &mut app, extent(tile + Vec2::splat(8.0)));
+                assert_eq!(
+                    mixed.viewport_output[&egui::ViewportId::ROOT].commands,
+                    vec![ViewportCommand::InnerSize(extent(tile + Vec2::splat(8.0)))]
+                );
+                session_request_state(
+                    address,
+                    "a",
+                    (ppp * 100.0) as u64 * 2 + 1,
+                    "emote",
+                    42,
+                    Some("clock"),
+                );
+                let requested = compact_surface(&ctx, &mut app, extent(tile + Vec2::splat(8.0)));
+                assert_eq!(
+                    requested.viewport_output[&egui::ViewportId::ROOT].commands,
+                    vec![ViewportCommand::InnerSize(size)]
+                );
+                let applied = compact_surface(&ctx, &mut app, size);
+                assert_compact_clock(&applied, 100);
+                assert_eq!(compact_backgrounds(&applied).len(), 2);
+                for (_, image) in clock_meshes(&applied) {
+                    assert_whole_physical_pixels(image, ppp, "compact packed clock");
+                    assert!(
+                        (image.width() * ppp - 64.0 * (f32::from(scale) * ppp).floor()).abs()
+                            < 0.001
+                    );
+                }
+                assert!(
+                    applied.viewport_output[&egui::ViewportId::ROOT]
+                        .commands
+                        .is_empty()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn compact_clock_single_and_global_keep_date_fallback_and_controls() {
+    for opacity in [100, 50, 0] {
+        let (ctx, mut app, address) = setup();
+        session_request_state(address, "a", 1, "emote", 42, Some("clock"));
+        step(&ctx, &mut app, vec![]);
+        assert_eq!(frames(&step(&ctx, &mut app, vec![])).len(), 1);
+        toggle_option(&ctx, &mut app, "No frame");
+        if opacity < 100 {
+            set_background_opacity(&ctx, &mut app, f32::from(opacity) / 100.0);
+        }
+        let size = Vec2::new(260.0, 300.0);
+        let single = compact_surface(&ctx, &mut app, size);
+        assert_compact_clock(&single, opacity);
+        session_request(address, "a", 2, "emote/close", 0);
+        let global = compact_surface(&ctx, &mut app, size);
+        assert_compact_clock(&global, opacity);
+        assert_clock_pixels(&global, clock_meshes(&global)[0].0, 5000, None);
+        assert!(frames(&global).is_empty());
+        assert_eq!(compact_backgrounds(&global).len(), usize::from(opacity > 0));
+        drop(global);
+        // Full root hit target still works outside the compact background.
+        let p = Pos2::new(1.0, 1.0);
+        step(
+            &ctx,
+            &mut app,
+            vec![
+                Event::PointerMoved(p),
+                button(p, PointerButton::Primary, true),
+            ],
+        );
+        let drag = step(
+            &ctx,
+            &mut app,
+            vec![Event::PointerMoved(p + Vec2::splat(30.0))],
+        );
+        assert!(
+            drag.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&ViewportCommand::StartDrag)
+        );
+        step(
+            &ctx,
+            &mut app,
+            vec![button(p, PointerButton::Primary, false)],
+        );
+        select_menu_option(&ctx, &mut app, "No frame");
+        assert!(
+            frames(&compact_surface(&ctx, &mut app, size)).is_empty(),
+            "global remains unframed"
+        );
+    }
+}
+
 fn assert_uploaded_pixels(output: &Output, id: egui::TextureId, rgba: &[u8]) {
     let delta = output.textures_delta.set[&id].last().unwrap();
     assert_eq!(delta.options, egui::TextureOptions::NEAREST);
