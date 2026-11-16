@@ -48,6 +48,7 @@ struct Session {
     retired: VecDeque<String>,
     frame: Arc<Frame>,
     state: SessionState,
+    project_name: Option<String>,
     active: bool,
     closed: bool,
     seen: Instant,
@@ -60,6 +61,7 @@ pub struct SessionRegistry {
     sessions: Vec<Session>,
     legacy: Option<Arc<Frame>>,
     legacy_state: SessionState,
+    legacy_project_name: Option<String>,
     latest: Option<Arc<Frame>>,
     retained: Option<SessionSnapshot>,
     clock_after_close: bool,
@@ -102,10 +104,38 @@ impl SessionRegistry {
         snapshots
     }
 
+    /// Names and frames come from the same serialized registry observation.
+    pub fn snapshots_with_names(&self) -> Vec<(SessionSnapshot, Option<String>)> {
+        self.snapshots()
+            .into_iter()
+            .map(|snapshot| {
+                let name = match snapshot.session_id.as_deref() {
+                    Some(id) => self
+                        .sessions
+                        .iter()
+                        .find(|s| s.id == id)
+                        .and_then(|s| s.project_name.clone()),
+                    None => self.legacy_project_name.clone(),
+                };
+                (snapshot, name)
+            })
+            .collect()
+    }
+
     pub fn publish_legacy(&mut self, frame: Arc<Frame>, state: SessionState) {
+        self.publish_legacy_named(frame, state, None);
+    }
+
+    pub(crate) fn publish_legacy_named(
+        &mut self,
+        frame: Arc<Frame>,
+        state: SessionState,
+        project_name: Option<String>,
+    ) {
         self.latest = Some(frame.clone());
         self.legacy = Some(frame);
         self.legacy_state = state;
+        self.legacy_project_name = project_name;
         self.retained = None;
         self.clock_after_close = false;
     }
@@ -118,6 +148,20 @@ impl SessionRegistry {
         stream: &str,
         sequence: u64,
         event: Event,
+        now: Instant,
+    ) -> Result<bool, CapacityError> {
+        self.apply_named(id, stream, sequence, event, None, now)
+    }
+
+    // The receiver supplies bounded, validated image metadata. Keeping this
+    // entry point crate-private preserves the original public event contract.
+    pub(crate) fn apply_named(
+        &mut self,
+        id: &str,
+        stream: &str,
+        sequence: u64,
+        event: Event,
+        project_name: Option<String>,
         now: Instant,
     ) -> Result<bool, CapacityError> {
         let index = self.sessions.iter().position(|s| s.id == id);
@@ -165,6 +209,7 @@ impl SessionRegistry {
                     retired: VecDeque::new(),
                     frame: frame.clone(),
                     state: SessionState::Normal,
+                    project_name: None,
                     active: false,
                     closed: false,
                     seen: now,
@@ -187,6 +232,7 @@ impl SessionRegistry {
             Event::Frame(frame, state) => {
                 s.frame = frame.clone();
                 s.state = state;
+                s.project_name = project_name;
                 self.latest = Some(frame);
                 true
             }

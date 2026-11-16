@@ -49,6 +49,15 @@ impl LatestFrame {
         (registry.snapshots(), registry.show_clock())
     }
 
+    /// Atomically pair visible frames with their optional sender project names.
+    /// The original snapshot API and its public struct remain unchanged.
+    pub fn snapshots_with_names(&self) -> Vec<(SessionSnapshot, Option<String>)> {
+        self.0
+            .lock()
+            .expect("frame lock poisoned")
+            .snapshots_with_names()
+    }
+
     /// Active avatars in stable first-seen order, or the retained final avatar.
     /// Pixel Arcs remain valid across publication, expiry, and shutdown.
     pub fn snapshots(&self) -> Vec<SessionSnapshot> {
@@ -245,10 +254,18 @@ async fn handle(
         None
     };
     let close = path == "/emote/close";
-    // Optional sender presentation metadata: only the documented `clock`
-    // value selects the internal clock; everything else (including absent or
-    // unknown values) stays an ordinary image state. Other metadata headers
-    // remain accepted-and-ignored.
+    // Image metadata is validated before the body, but committed only after
+    // decode and the atomic lifecycle guards. Lifecycle endpoints ignore it.
+    let project_name = if lifecycle {
+        None
+    } else {
+        match parse_project_name(headers) {
+            Ok(name) => name,
+            Err(()) => return Ok(reply(S::BAD_REQUEST, "invalid project name\n")),
+        }
+    };
+    // Only the documented `clock` value selects the internal clock; absent or
+    // unknown states stay ordinary images. Unrelated metadata remains ignored.
     let state = if headers.get("x-emote-state").and_then(|v| v.to_str().ok()) == Some("clock") {
         SessionState::Clock
     } else {
@@ -293,12 +310,19 @@ async fn handle(
     let changed = {
         let mut registry = latest.0.lock().expect("frame lock poisoned");
         if let Some((session, stream, sequence)) = identity {
-            registry.apply(&session, &stream, sequence, event, Instant::now())
+            registry.apply_named(
+                &session,
+                &stream,
+                sequence,
+                event,
+                project_name,
+                Instant::now(),
+            )
         } else {
             let Event::Frame(frame, state) = event else {
                 unreachable!()
             };
-            registry.publish_legacy(frame, state);
+            registry.publish_legacy_named(frame, state, project_name);
             Ok(true)
         }
     };
@@ -308,6 +332,54 @@ async fn handle(
         Ok(false) => {}
     }
     Ok(reply(S::NO_CONTENT, ""))
+}
+
+// Match the existing producer's encodeProjectName/JavaScript string bound.
+// No form decoding: a literal '+' is a plus and escapes are decoded once.
+fn parse_project_name(headers: &hyper::HeaderMap) -> Result<Option<String>, ()> {
+    let mut values = headers.get_all("x-emote-project-name").iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(());
+    }
+    let encoded = value.to_str().map_err(|_| ())?;
+    if encoded.len() > 1152 {
+        return Err(());
+    }
+    let mut decoded = Vec::with_capacity(encoded.len().min(384));
+    let mut bytes = encoded.bytes();
+    while let Some(byte) = bytes.next() {
+        let byte = if byte == b'%' {
+            let hex = |byte: u8| {
+                char::from(byte)
+                    .to_digit(16)
+                    .map(|digit| digit as u8)
+                    .ok_or(())
+            };
+            (hex(bytes.next().ok_or(())?)? << 4) | hex(bytes.next().ok_or(())?)?
+        } else {
+            byte
+        };
+        if decoded.len() == 384 {
+            return Err(());
+        }
+        decoded.push(byte);
+    }
+    let name = String::from_utf8(decoded).map_err(|_| ())?;
+    // JavaScript trim includes BOM but excludes U+0085, unlike Rust trim.
+    let whitespace = |ch: char| ch == '\u{feff}' || (ch.is_whitespace() && ch != '\u{85}');
+    if name.trim_matches(whitespace).is_empty()
+        || name.encode_utf16().count() > 128
+        || matches!(name.as_str(), "." | "..")
+        || name
+            .chars()
+            .any(|ch| ch <= '\u{1f}' || ch == '\u{7f}' || matches!(ch, '/' | '\\'))
+    {
+        return Err(());
+    }
+    Ok(Some(name))
 }
 
 fn session_headers(headers: &hyper::HeaderMap) -> Option<(String, String, u64)> {

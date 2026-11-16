@@ -283,6 +283,339 @@ fn request(address: SocketAddr, method: &str, path: &str, headers: &str, body: &
 
 const HEADERS: &str = "Content-Type: image/png\r\nX-Emote-Version: 1\r\n";
 
+fn project_headers(session: &str, stream: &str, sequence: &str, encoded: &str) -> String {
+    format!(
+        "{}X-Emote-Project-Name: {encoded}\r\n",
+        session_state_headers(session, stream, sequence, "clock")
+    )
+}
+
+#[test]
+fn project_name_decodes_existing_producer_names_and_preserves_legacy() {
+    let (receiver, count) = start();
+    let address = receiver.local_addr();
+    let latest = receiver.latest();
+    let cases = [
+        ("Mi%20t%C3%ADtulo".into(), "Mi título".into()),
+        (
+            "carpeta-%C3%A9%20%2B%20demo".into(),
+            "carpeta-é + demo".into(),
+        ),
+        ("a+b".into(), "a+b".into()),
+        ("%252E".into(), "%2E".into()),
+        ("%20folder%20".into(), " folder ".into()),
+        ("%C2%85".into(), "\u{85}".into()),
+        ("x".repeat(128), "x".repeat(128)),
+        ("%E7%95%8C".repeat(128), "界".repeat(128)),
+        ("%F0%9F%9A%80".repeat(64), "🚀".repeat(64)),
+    ];
+    for (index, (encoded, expected)) in cases.iter().enumerate() {
+        let sequence = (index + 1).to_string();
+        assert_response(
+            &request(
+                address,
+                "POST",
+                "/emote",
+                &project_headers("a", "s", &sequence, encoded),
+                &png(64, 64, index as u8),
+            ),
+            204,
+            "",
+        );
+        let (snapshot, name) = latest.snapshots_with_names().remove(0);
+        assert_eq!(name.as_deref(), Some(expected.as_str()));
+        assert_eq!(snapshot.state, SessionState::Clock);
+        assert!(Arc::ptr_eq(&snapshot.frame, &latest.get().unwrap()));
+        assert_eq!(count.load(Ordering::SeqCst), index + 1);
+    }
+    // Missing metadata replaces the old name with None, never an opaque ID.
+    assert_response(
+        &request(
+            address,
+            "POST",
+            "/emote",
+            &session_headers("a", "s", "100"),
+            &png(64, 64, 90),
+        ),
+        204,
+        "",
+    );
+    assert!(latest.snapshots_with_names()[0].1.is_none());
+    let legacy = format!("{HEADERS}X-Emote-Project-Name: Legacy%20folder\r\n");
+    assert_response(
+        &request(address, "POST", "/emote", &legacy, &png(64, 64, 91)),
+        204,
+        "",
+    );
+    let (snapshot, name) = latest.snapshots_with_names().remove(0);
+    assert!(snapshot.session_id.is_none());
+    assert_eq!(name.as_deref(), Some("Legacy folder"));
+    assert_response(
+        &request(address, "POST", "/emote", HEADERS, &png(64, 64, 92)),
+        204,
+        "",
+    );
+    assert!(latest.snapshots_with_names()[0].1.is_none());
+    assert_eq!(count.load(Ordering::SeqCst), cases.len() + 3);
+}
+
+#[test]
+fn project_name_rejection_preserves_pixels_state_name_notifications_and_sequence() {
+    let (receiver, count) = start();
+    let address = receiver.local_addr();
+    let latest = receiver.latest();
+    assert_response(
+        &request(
+            address,
+            "POST",
+            "/emote",
+            &project_headers("a", "s", "1", "before"),
+            &png(64, 64, 9),
+        ),
+        204,
+        "",
+    );
+    let saved = latest.get().unwrap();
+    let mut invalid: Vec<String> = [
+        "",
+        "%",
+        "%0",
+        "%GG",
+        "%FF",
+        "%C3%28",
+        "%ED%A0%80",
+        "%00",
+        "%1F",
+        "%7F",
+        "a%2Fb",
+        "a%5Cb",
+        ".",
+        "..",
+        "%20%C2%A0%EF%BB%BF",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    invalid.extend([
+        "x".repeat(129),
+        "%E7%95%8C".repeat(129),
+        "%F0%9F%9A%80".repeat(65),
+    ]);
+    let mut headers: Vec<String> = invalid
+        .iter()
+        .map(|name| project_headers("a", "s", "2", name))
+        .collect();
+    headers.push(format!(
+        "{}X-Emote-Project-Name: second\r\n",
+        project_headers("a", "s", "2", "first")
+    ));
+    for header in headers {
+        assert_response(
+            &request(address, "POST", "/emote", &header, &png(64, 64, 99)),
+            400,
+            "invalid project name\n",
+        );
+        let (snapshot, name) = latest.snapshots_with_names().remove(0);
+        assert!(Arc::ptr_eq(&saved, &snapshot.frame));
+        assert_eq!(snapshot.state, SessionState::Clock);
+        assert!(snapshot.active);
+        assert_eq!(name.as_deref(), Some("before"));
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+    // Existing Origin and identity policy still precede optional-name parsing.
+    for (header, status, message) in [
+        (
+            format!("{}Origin: null\r\n", project_headers("a", "s", "2", "%")),
+            403,
+            "Origin is not allowed\n",
+        ),
+        (
+            project_headers("bad id", "s", "2", "%"),
+            400,
+            "invalid session headers\n",
+        ),
+    ] {
+        assert_response(
+            &request(address, "POST", "/emote", &header, &png(64, 64, 99)),
+            status,
+            message,
+        );
+    }
+    assert_response(
+        &request(
+            address,
+            "POST",
+            "/emote",
+            &project_headers("a", "s", "2", "after"),
+            b"bad",
+        ),
+        422,
+        "expected a 64x64 PNG\n",
+    );
+    assert!(Arc::ptr_eq(&saved, &latest.get().unwrap()));
+    assert_eq!(
+        latest.snapshots_with_names()[0].1.as_deref(),
+        Some("before")
+    );
+    assert_eq!(count.load(Ordering::SeqCst), 1);
+    assert_response(
+        &request(
+            address,
+            "POST",
+            "/emote",
+            &project_headers("a", "s", "2", "after"),
+            &png(64, 64, 10),
+        ),
+        204,
+        "",
+    );
+    assert_eq!(latest.snapshots_with_names()[0].1.as_deref(), Some("after"));
+    assert_eq!(latest.get().unwrap().rgba[0], 10);
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn project_name_delayed_body_cannot_rename_after_newer_lifecycle_or_takeover() {
+    for (path, stream, sequence, body) in [
+        ("/emote/heartbeat", "old", "3", vec![]),
+        ("/emote/close", "old", "3", vec![]),
+        ("/emote", "new", "0", png(64, 64, 7)),
+    ] {
+        let (receiver, count) = start();
+        let address = receiver.local_addr();
+        let latest = receiver.latest();
+        assert_response(
+            &request(
+                address,
+                "POST",
+                "/emote",
+                &project_headers("a", "old", "1", "original"),
+                &png(64, 64, 9),
+            ),
+            204,
+            "",
+        );
+        let bytes = png(64, 64, 99);
+        let mut slow = connect(address);
+        write!(
+            slow,
+            "POST /emote HTTP/1.1\r\nHost: localhost\r\n{}Content-Length: {}\r\n\r\n",
+            project_headers("a", "old", "2", "outdated"),
+            bytes.len()
+        )
+        .unwrap();
+        slow.write_all(&bytes[..1]).unwrap();
+        let name = if path == "/emote" { "current" } else { "%ZZ" };
+        assert_response(
+            &request(
+                address,
+                "POST",
+                path,
+                &project_headers("a", stream, sequence, name),
+                &body,
+            ),
+            204,
+            "",
+        );
+        let saved = latest.snapshots_with_names().remove(0);
+        assert_eq!(
+            saved.1.as_deref(),
+            Some(if path == "/emote" {
+                "current"
+            } else {
+                "original"
+            })
+        );
+        let before = count.load(Ordering::SeqCst);
+        slow.write_all(&bytes[1..]).unwrap();
+        assert_response(&response(slow), 204, "");
+        let after = latest.snapshots_with_names().remove(0);
+        assert!(Arc::ptr_eq(&saved.0.frame, &after.0.frame));
+        assert_eq!(saved.0.active, after.0.active);
+        assert_eq!(saved.0.state, after.0.state);
+        assert_eq!(saved.1, after.1);
+        assert_eq!(count.load(Ordering::SeqCst), before);
+    }
+}
+
+#[test]
+fn project_name_capacity_rejection_and_unknown_heartbeat_leave_names_unchanged() {
+    let (receiver, count) = start();
+    let address = receiver.local_addr();
+    let latest = receiver.latest();
+    assert_response(
+        &request(
+            address,
+            "POST",
+            "/emote/heartbeat",
+            &project_headers("unknown", "s", "0", "ignored"),
+            &[],
+        ),
+        204,
+        "",
+    );
+    assert!(latest.snapshots_with_names().is_empty());
+    assert_eq!(count.load(Ordering::SeqCst), 0);
+    for i in 0..32 {
+        let id = i.to_string();
+        assert_response(
+            &request(
+                address,
+                "POST",
+                "/emote",
+                &project_headers(&id, "s", "0", &format!("folder{i}")),
+                &png(64, 64, i),
+            ),
+            204,
+            "",
+        );
+    }
+    let saved = latest.snapshots_with_names();
+    assert_response(
+        &request(
+            address,
+            "POST",
+            "/emote",
+            &project_headers("extra", "s", "0", "extra"),
+            &png(64, 64, 99),
+        ),
+        429,
+        "session limit reached\n",
+    );
+    for (i, (snapshot, name)) in latest.snapshots_with_names().iter().enumerate() {
+        assert!(Arc::ptr_eq(&saved[i].0.frame, &snapshot.frame));
+        assert_eq!(name.as_deref(), Some(format!("folder{i}").as_str()));
+    }
+    assert_eq!(count.load(Ordering::SeqCst), 32);
+    assert_response(
+        &request(
+            address,
+            "POST",
+            "/emote/close",
+            &session_headers("0", "s", "1"),
+            &[],
+        ),
+        204,
+        "",
+    );
+    assert_response(
+        &request(
+            address,
+            "POST",
+            "/emote",
+            &project_headers("extra", "s", "0", "extra"),
+            &png(64, 64, 99),
+        ),
+        204,
+        "",
+    );
+    assert_eq!(
+        latest.snapshots_with_names().last().unwrap().1.as_deref(),
+        Some("extra")
+    );
+    assert_eq!(count.load(Ordering::SeqCst), 34);
+}
+
 fn session_headers(session: &str, stream: &str, sequence: &str) -> String {
     format!(
         "{HEADERS}X-Emote-Session-Id: {session}\r\nX-Emote-Stream-Id: {stream}\r\nX-Emote-Sequence: {sequence}\r\n"

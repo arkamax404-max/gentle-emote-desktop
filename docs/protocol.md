@@ -74,8 +74,9 @@ request and closes; keepalive/pipelining are not supported. Content-Type is
 case-insensitive but must be exactly `image/png` without parameters. Exactly one
 Content-Type and one X-Emote-Version header are required. Version must be `1`.
 Most additional state/frame/set/activity/stream metadata is accepted and ignored:
-visual labels are already in the pixels. The single exception is `X-Emote-State`:
-its documented value `clock` marks the sender's presentation as the idle clock,
+visual labels are already in the pixels. `X-Emote-Project-Name` optionally supplies
+the resolved title/folder name (see below). `X-Emote-State`'s documented value
+`clock` marks the sender's presentation as the idle clock,
 which the desktop renders internally (see below); every other value, including
 absent or unknown ones, stays an ordinary image state. The frame body is always
 validated and stored exactly like any other image. Session lifecycle headers
@@ -93,6 +94,27 @@ Successful requests return **204 No Content**, empty body. For legacy requests,
 the most recently published valid image wins, with no sender-order guarantee.
 Session-aware publication additionally enforces stream sequence order. There is
 no animation queue.
+
+### Optional project name
+
+Images may carry one `X-Emote-Project-Name: Mi%20t%C3%ADtulo` header, using the
+existing sender's `encodeURIComponent` UTF-8 encoding. Decode exactly once;
+`+` is literal, not a space. The raw resolved name is the `/emote title` override
+or otherwise the captured working-directory basename, never a full path.
+
+The decoded name must be nonblank, at most 128 UTF-16 units (the sender's existing
+bound), without C0/DEL controls, path separators, or exact `.`/`..`. Preserve
+nonblank folder whitespace and Unicode; limits are 384 decoded UTF-8 bytes and
+1152 encoded ASCII bytes. Duplicate headers, malformed escapes/UTF-8, or invalid
+names return 400 `invalid project name\n` without publishing or consuming sequence.
+An absent header clears the name on an accepted image. Heartbeat/close ignore
+this optional header and retain the accepted frame's name.
+
+`latest().snapshots_with_names()` atomically pairs each unchanged `SessionSnapshot`
+with its `Option<String>` name, including legacy and retained snapshots. Names
+commit under the same post-decode stream/sequence/capacity guards as pixels and
+state; rejected or delayed stale requests cannot rename a newer frame. The old
+`snapshots()`, `get()`, `SessionSnapshot` and `Event` APIs remain unchanged.
 
 ### Session avatars and liveness
 
@@ -176,7 +198,8 @@ by the same 64-record cap, not an unbounded session history.
 Application responses have `Connection: close` and
 `Content-Type: text/plain; charset=utf-8`. Error bodies below end in one newline.
 Policy precedence remains Origin, path, method, media type (frames only), version,
-length, then required session headers, body, PNG/empty-body validation, publication.
+length, then required session headers, optional project name (images only), body,
+PNG/empty-body validation, publication.
 
 | Condition | Status | Exact body (before newline) |
 | --- | --- | --- |
@@ -190,6 +213,7 @@ length, then required session headers, body, PNG/empty-body validation, publicat
 | Malformed HTTP body framing surfaced to the handler | 400 | `malformed body` |
 | Empty, invalid, truncated, animated, wrong-size, or decode-limit PNG | 422 | `expected a 64x64 PNG` |
 | Missing, duplicate, or invalid required session/stream/sequence headers | 400 | `invalid session headers` |
+| Invalid or duplicate image project-name metadata | 400 | `invalid project name` |
 | Nonempty heartbeat/close body | 400 | `expected empty body` |
 | Activation exceeds the active-session cap | 429 | `session limit reached` |
 
@@ -205,6 +229,7 @@ HTTP acknowledgement is not an exactly-once delivery guarantee.
 
 | Resource | Limit | Why |
 | --- | --- | --- |
+| Optional project name | 128 UTF-16 units, 384 decoded UTF-8 / 1152 encoded ASCII bytes | Matches the existing sender; at most one name per bounded record |
 | Encoded body | 65,536 bytes, inclusive | Plenty for a raw 64x64 RGBA PNG; rejects large uploads, even chunked |
 | Image dimensions | Exactly 64x64, checked immediately after IHDR | Rejects dimension bombs before dimension-dependent decoder allocations |
 | PNG decoder budget | 256 KiB | Explicit `png::Limits` budget for decoder-managed allocations |
