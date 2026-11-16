@@ -114,10 +114,12 @@ A session whose latest frame carries `X-Emote-State: clock` renders the internal
 pixel clock (`idle_clock_image`, ported 1:1 from the canonical Lemmings renderer)
 in its own tile with the normal tile frame, never hiding active neighbors; any
 ordinary image state exits it. Each visible clock session has a stable texture
-handle and cached 500ms animation step, so repaints between ticks never reupload.
+handle, cached 500ms animation step and accepted project name. Repaints between
+ticks do not reupload unless that name changes, even with identical sender PNGs.
 Entries disappear when their clock tile disappears or returns to normal; the
-cache is bounded by visible registry keys. Global fallback and legacy clocks use
-a date-only `None` key, never a retained last session ID. The window
+cache is bounded by visible registry keys. IDs key textures, never header text;
+legacy names can use the singleton `None` key. Global fallback has no name and
+keeps the date, never a retained session ID or title. The window
 schedules a 500ms repaint only while a clock is visible. The final-close clock
 renders a compact composition without a decorative frame. Received clock-state PNG bodies
 stay validated and stored, but their pixels are not uploaded while the internal
@@ -125,16 +127,18 @@ clock is shown.
 
 The pure renderer also exposes
 `render_for_session(now: DateTime<FixedOffset>, session_id: &str) -> Frame`.
-It alternates date and validated ASCII ID in absolute five-second Unix buckets:
-0–4999ms is date, 5000–9999ms is ID, then date again (Euclidean division also
-handles pre-epoch instants). Empty IDs return the original date-only `render(now)`.
-The ID preserves `[A-Za-z0-9._:-]` case in muted 3×5 glyphs on rows 1–5.
-At most 16 fixed cells fit: `16×3 + 15×1 = 63` pixels. Longer IDs show their
-first 13 characters plus three static dots, never scrolling. ID-only glyphs do
+The legacy API name remains compatible; the app supplies the sender's validated
+project name, not its ID. Absolute five-second Unix buckets alternate date at
+0–4999ms and name at 5000–9999ms (Euclidean division handles pre-epoch instants).
+Missing names use original date-only `render(now)`. Muted 3×5 glyphs preserve
+ASCII case on rows 1–5; unsupported characters reserve blank cells in the unchanged
+compact alphabet. At most 16 cells fit: `16×3 + 15×1 = 63` pixels. Longer names
+show their first 13 characters plus three static dots, never scrolling. Label glyphs do
 not change canonical date/time typography, even for negative years; all pixels
 outside the header still come from `render(now)`, including 500ms walkers.
-The app uses this renderer for identified clock tiles; global and legacy clocks
-keep `render(now)`. Additive `EmoteApp::show_at(ui, now)` exposes the same drawing
+The app uses an atomic snapshot of names, frames and final-close mode; ordinary
+avatar paths still receive the original ordered snapshots. Global and unnamed
+clock tiles keep `render(now)`. Additive `EmoteApp::show_at(ui, now)` exposes the same drawing
 path at a deterministic instant for embedding/pixel checks; `show(ui)` supplies
 local wall time. Neither API changes geometry, framing, or avatar uploads.
 

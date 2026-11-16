@@ -43,7 +43,7 @@ const GLYPHS: &[(char, [&str; 5])] = &[
     (':', ["000", "010", "000", "010", "000"]),
 ];
 
-// ID-only additions: keep the canonical date/time lookup unchanged, including
+// Label-only additions: keep the canonical date/time lookup unchanged, including
 // its intentionally absent minus glyph for negative years.
 const ID_GLYPHS: &[(char, [&str; 5])] = &[
     ('A', ["010", "101", "111", "101", "101"]),
@@ -174,10 +174,12 @@ impl Canvas {
     }
 }
 
-/// Alternate the local date with an already validated ASCII session ID every
-/// five seconds. Absolute Unix buckets start with date at 0..4999ms; empty IDs
-/// retain the date-only fallback. IDs over 16 cells use their first 13 + `...`.
-/// Only header rows 1..=5 change; the canonical renderer owns all other pixels.
+/// Alternate the local date with a caller-supplied label every five seconds.
+/// The legacy API name is retained; the app supplies a validated project name,
+/// never an identity fallback. Empty labels keep the date; over 16 character
+/// cells use the first 13 + `...`. The existing compact alphabet is unchanged:
+/// unsupported characters reserve blank cells. Only header rows 1..=5 change;
+/// the canonical renderer owns all other pixels.
 pub fn render_for_session(now: DateTime<FixedOffset>, session_id: &str) -> Frame {
     let mut frame = render(now);
     if session_id.is_empty() || now.timestamp_millis().div_euclid(5000).rem_euclid(2) == 0 {

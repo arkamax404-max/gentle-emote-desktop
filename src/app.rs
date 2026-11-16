@@ -14,6 +14,7 @@ struct AvatarTexture {
 
 struct ClockTexture {
     step: i64,
+    name: Option<String>,
     texture: TextureHandle,
 }
 
@@ -283,42 +284,58 @@ impl EmoteApp {
         // Inactive final avatars intentionally use the same cache entry and pixels.
         let (snapshots, show_clock) = self.latest.display_snapshot();
         // Cache only visible clock keys, bounded by the registry's snapshot cap.
-        // None is date-only (global/legacy), never the retained final session ID.
-        let clock_keys: Vec<_> = if show_clock {
-            vec![None]
+        // IDs remain cache identity, never display-name fallbacks. The global
+        // clock has no name; legacy frames may supply one without an ID.
+        let clock_inputs: Vec<_> = if show_clock {
+            vec![(None, None)]
         } else {
             snapshots
                 .iter()
-                .filter(|s| s.state == SessionState::Clock)
-                .map(|s| s.session_id.clone())
+                .filter(|(s, _)| s.state == SessionState::Clock)
+                .map(|(s, name)| (s.session_id.clone(), name.clone()))
                 .collect()
         };
-        let any_clock = !clock_keys.is_empty();
-        self.clocks.retain(|key, _| clock_keys.contains(key));
+        let any_clock = !clock_inputs.is_empty();
+        self.clocks
+            .retain(|key, _| clock_inputs.iter().any(|(id, _)| id == key));
         let step = idle_clock_image::animation_step(now);
-        for key in clock_keys {
+        for (key, name) in clock_inputs {
             if self
                 .clocks
                 .get(&key)
-                .is_some_and(|clock| clock.step == step)
+                .is_some_and(|clock| clock.step == step && clock.name == name)
             {
                 continue;
             }
-            let frame = key.as_deref().map_or_else(
+            let frame = name.as_deref().map_or_else(
                 || idle_clock_image::render(now),
-                |id| idle_clock_image::render_for_session(now, id),
+                |name| idle_clock_image::render_for_session(now, name),
             );
             let image = ColorImage::from_rgba_unmultiplied([64, 64], &frame.rgba);
             if let Some(clock) = self.clocks.get_mut(&key) {
                 clock.texture.set(image, TextureOptions::NEAREST);
                 clock.step = step;
+                clock.name = name;
             } else {
                 let texture =
                     ui.ctx()
                         .load_texture("emote-idle-clock", image, TextureOptions::NEAREST);
-                self.clocks.insert(key, ClockTexture { step, texture });
+                self.clocks.insert(
+                    key,
+                    ClockTexture {
+                        step,
+                        name,
+                        texture,
+                    },
+                );
             }
         }
+        // Ordinary avatar geometry and texture handling still consume exactly
+        // the original ordered snapshots; names affect only clock pixels.
+        let snapshots: Vec<_> = snapshots
+            .into_iter()
+            .map(|(snapshot, _)| snapshot)
+            .collect();
         self.textures
             .retain(|key, _| snapshots.iter().any(|snapshot| &snapshot.session_id == key));
         for snapshot in &snapshots {

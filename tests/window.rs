@@ -90,6 +90,18 @@ fn session_request_state(
     shade: u8,
     state: Option<&str>,
 ) {
+    session_request_named(address, id, seq, kind, shade, state, None);
+}
+
+fn session_request_named(
+    address: std::net::SocketAddr,
+    id: &str,
+    seq: u64,
+    kind: &str,
+    shade: u8,
+    state: Option<&str>,
+    name: Option<&str>,
+) {
     let mut png = Vec::new();
     if kind == "emote" {
         let mut encoder = png::Encoder::new(&mut png, 64, 64);
@@ -104,6 +116,9 @@ fn session_request_state(
     let state = state
         .map(|value| format!("X-Emote-State: {value}\r\n"))
         .unwrap_or_default();
+    let name = name
+        .map(|name| format!("X-Emote-Project-Name: {name}\r\n"))
+        .unwrap_or_default();
     let identity = if id.is_empty() {
         String::new() // Exercise the public legacy singleton without identity headers.
     } else {
@@ -112,7 +127,7 @@ fn session_request_state(
         )
     };
     let mut socket = TcpStream::connect(address).unwrap();
-    write!(socket, "POST /{kind} HTTP/1.1\r\nHost: localhost\r\nContent-Type: image/png\r\nX-Emote-Version: 1\r\n{state}{identity}Content-Length: {}\r\n\r\n", png.len()).unwrap();
+    write!(socket, "POST /{kind} HTTP/1.1\r\nHost: localhost\r\nContent-Type: image/png\r\nX-Emote-Version: 1\r\n{state}{name}{identity}Content-Length: {}\r\n\r\n", png.len()).unwrap();
     socket.write_all(&png).unwrap();
     let mut response = String::new();
     socket.read_to_string(&mut response).unwrap();
@@ -2282,8 +2297,16 @@ fn assert_clock_pixels(output: &Output, id: egui::TextureId, millis: i64, sessio
 fn session_clock_headers_are_independent_step_cached_and_preserve_normal_neighbor() {
     let (ctx, mut app, address) = setup();
     let long = "LongSession-0123456789";
-    session_request_state(address, "a", 1, "emote", 42, Some("clock"));
-    session_request_state(address, long, 1, "emote", 84, Some("clock"));
+    session_request_named(
+        address,
+        "a",
+        1,
+        "emote",
+        42,
+        Some("clock"),
+        Some("FolderAlpha"),
+    );
+    session_request_named(address, "b", 1, "emote", 84, Some("clock"), Some(long));
     session_request(address, "normal", 1, "emote", 126);
     let initial = clock_at(&ctx, &mut app, 0);
     let clocks = clock_meshes(&initial);
@@ -2292,7 +2315,7 @@ fn session_clock_headers_are_independent_step_cached_and_preserve_normal_neighbo
     assert_eq!(clocks.len(), 2);
     assert_eq!(neighbor.len(), 1);
     assert_ne!(clocks[0].0, clocks[1].0, "each ID needs independent pixels");
-    for (index, session) in ["a", long].into_iter().enumerate() {
+    for (index, session) in ["FolderAlpha", long].into_iter().enumerate() {
         assert_clock_pixels(&initial, clocks[index].0, 0, Some(session));
     }
     assert_uploaded_pixels(&initial, neighbor[0].0, &[126, 7, 9, 255].repeat(64 * 64));
@@ -2314,7 +2337,7 @@ fn session_clock_headers_are_independent_step_cached_and_preserve_normal_neighbo
             );
         } else {
             assert_eq!(clock_uploads(&output).len(), 2);
-            for (index, session) in ["a", long].into_iter().enumerate() {
+            for (index, session) in ["FolderAlpha", long].into_iter().enumerate() {
                 assert_clock_pixels(&output, clocks[index].0, millis, Some(session));
             }
             assert!(!output.textures_delta.set.contains_key(&neighbor[0].0));
@@ -2338,7 +2361,7 @@ fn session_clock_cache_releases_on_state_return_and_disappearance() {
         1,
         "do not upload received clock PNG"
     );
-    assert_clock_pixels(&clock, old_clock, 5000, Some("a"));
+    assert_clock_pixels(&clock, old_clock, 5000, None);
     drop(clock);
     session_request(address, "a", 3, "emote", 126);
     let normal = clock_at(&ctx, &mut app, 5000);
@@ -2356,7 +2379,7 @@ fn session_clock_cache_releases_on_state_return_and_disappearance() {
     let restarted = clock_at(&ctx, &mut app, 5000);
     let new_clock = clock_meshes(&restarted)[0].0;
     assert_ne!(new_clock, old_clock);
-    assert_clock_pixels(&restarted, new_clock, 5000, Some("a"));
+    assert_clock_pixels(&restarted, new_clock, 5000, None);
     drop(restarted);
     session_request(address, "a", 5, "emote/close", 0);
     let gone = clock_at(&ctx, &mut app, 5000);
@@ -2369,10 +2392,18 @@ fn session_clock_cache_releases_on_state_return_and_disappearance() {
 #[test]
 fn session_clock_final_close_uses_date_only_and_releases_retained_id_cache() {
     let (ctx, mut app, address) = setup();
-    session_request_state(address, "LastID", 1, "emote", 42, Some("clock"));
+    session_request_named(
+        address,
+        "LastID",
+        1,
+        "emote",
+        42,
+        Some("clock"),
+        Some("LastTitle"),
+    );
     let session = clock_at(&ctx, &mut app, 5000);
     let old = clock_meshes(&session)[0].0;
-    assert_clock_pixels(&session, old, 5000, Some("LastID"));
+    assert_clock_pixels(&session, old, 5000, Some("LastTitle"));
     drop(session);
     session_request(address, "LastID", 2, "emote/close", 0);
     let global = clock_at(&ctx, &mut app, 5000);
@@ -2398,6 +2429,76 @@ fn session_clock_legacy_without_id_keeps_date_header() {
     assert_clock_pixels(&legacy, clock_meshes(&legacy)[0].0, 5000, None);
     assert!(avatars(&legacy).is_empty());
     assert_eq!(clock_uploads(&legacy).len(), 1);
+    let id = clock_meshes(&legacy)[0].0;
+    drop(legacy);
+    session_request_named(
+        address,
+        "",
+        2,
+        "emote",
+        42,
+        Some("clock"),
+        Some("LegacyFolder"),
+    );
+    let named = clock_at(&ctx, &mut app, 5100);
+    assert_eq!(clock_meshes(&named)[0].0, id);
+    assert_clock_pixels(&named, id, 5100, Some("LegacyFolder"));
+}
+
+#[test]
+fn session_clock_names_invalidate_within_step_and_never_replace_identity() {
+    let (ctx, mut app, address) = setup();
+    for id in ["a", "b"] {
+        session_request_named(
+            address,
+            id,
+            1,
+            "emote",
+            42,
+            Some("clock"),
+            Some("SameTitle"),
+        );
+    }
+    session_request(address, "normal", 1, "emote", 126);
+    let initial = clock_at(&ctx, &mut app, 5000);
+    let clocks = clock_meshes(&initial);
+    let neighbor = avatars(&initial);
+    let borders = frames(&initial);
+    assert_ne!(clocks[0].0, clocks[1].0);
+    for (id, _) in &clocks {
+        assert_clock_pixels(&initial, *id, 5000, Some("SameTitle"));
+    }
+    drop(initial);
+    // Same PNG, same stream, same 500ms bucket: only metadata changes.
+    for (sequence, millis, encoded, decoded) in [
+        (
+            2,
+            5100,
+            Some("NewTitle-0123456789"),
+            Some("NewTitle-0123456789"),
+        ),
+        (3, 5200, Some("Mi%20t%C3%ADtulo"), Some("Mi título")),
+        (4, 5300, Some("FolderAlpha"), Some("FolderAlpha")),
+        (5, 5400, None, None),
+    ] {
+        session_request_named(address, "a", sequence, "emote", 42, Some("clock"), encoded);
+        let renamed = clock_at(&ctx, &mut app, millis);
+        assert_eq!(clock_meshes(&renamed), clocks);
+        assert_eq!(avatars(&renamed), neighbor);
+        assert_eq!(frames(&renamed), borders);
+        assert_eq!(clock_uploads(&renamed).len(), 1);
+        assert_clock_pixels(&renamed, clocks[0].0, millis, decoded);
+        assert!(!renamed.textures_delta.set.contains_key(&clocks[1].0));
+        assert!(!renamed.textures_delta.set.contains_key(&neighbor[0].0));
+        assert!(renamed.textures_delta.free.is_empty());
+        assert!(
+            renamed.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .is_empty()
+        );
+    }
+    let stable = clock_at(&ctx, &mut app, 5499);
+    assert!(stable.textures_delta.set.is_empty());
 }
 
 #[test]

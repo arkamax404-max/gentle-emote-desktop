@@ -433,7 +433,7 @@ results are reported separately; earlier milestone results above are historical.
 `cargo test --offline --test idle_clock_image` runs the four unchanged canonical
 checks plus three public-RGBA session-header checks. The new API is
 `render_for_session(now: DateTime<FixedOffset>, session_id: &str) -> Frame`;
-identified app clock tiles use it as well. Assertions cover exact 4999/5000/9999/
+named app clock tiles supply project names through this legacy-compatible API. Assertions cover exact 4999/5000/9999/
 10000ms boundaries, negative Unix buckets, byte-identical date phases and empty-ID
 fallback, different session headers at the same instant, and identical pixels
 outside rows 1–5. Static ellipsis checks cover 16/17/128-character IDs, the 63-pixel
@@ -446,13 +446,17 @@ The test-first baseline explicitly scaffolded the new API as delegation to
 pixel assertions (phase, ellipsis, and charset placement); compilation alone was
 not counted as RED. These pure checks do not establish app cache isolation.
 
-Four `session_clock_*` window tests send valid PNGs through the public receiver
+Five `session_clock_*` window tests send valid PNGs through the public receiver
 and draw with `EmoteApp::show_at` at fixed instants, inspecting egui texture deltas
-and meshes. They cover independent IDs (including static long-ID ellipsis), date
-at 0/10s and ID at 5s, no upload within a 500ms step, stable handles across phases,
+and meshes. They cover independent identity keys with different display names
+(including static long-name ellipsis), date at 0/10s and name at 5s, no upload within
+an unchanged 500ms/name step, stable handles across phases,
 unchanged normal-neighbor pixels/geometry/uploads, normal-state cache restoration,
 clock texture release on removal, final-close date-only fallback despite retained
-ID, replacement cleanup, and date-only legacy clock. The date-only shared-texture
+ID, replacement cleanup, and legacy clocks both with and without a name. The added
+rename test keeps identical PNGs and one 500ms bucket, checking immediate title,
+Unicode metadata, folder reset and missing-name updates without uploading the
+neighbor's texture or changing geometry/handles/native-size commands. The date-only shared-texture
 scaffold compiled, then failed three functional assertions (independent handles
 and session RGBA); legacy and the existing mixed-tile regression passed. After
 keyed-cache wiring all five focused tests passed. Logs are under

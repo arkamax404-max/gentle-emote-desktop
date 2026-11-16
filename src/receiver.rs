@@ -44,9 +44,9 @@ impl LatestFrame {
     }
 
     /// Read presentation state atomically, without holding the lock during rendering.
-    pub(crate) fn display_snapshot(&self) -> (Vec<SessionSnapshot>, bool) {
+    pub(crate) fn display_snapshot(&self) -> (Vec<(SessionSnapshot, Option<String>)>, bool) {
         let registry = self.0.lock().expect("frame lock poisoned");
-        (registry.snapshots(), registry.show_clock())
+        (registry.snapshots_with_names(), registry.show_clock())
     }
 
     /// Atomically pair visible frames with their optional sender project names.

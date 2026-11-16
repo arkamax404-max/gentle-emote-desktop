@@ -133,9 +133,12 @@ with `X-Emote-State: clock` on the ordinary image endpoint; any ordinary image
 state (or absent/unknown state value) restores the received pixels. An idle
 session's clock tile never hides active neighbors, honors the selected frame,
 and alternates its header every five seconds between the local date and its
-case-sensitive session ID. IDs longer than 16 characters show the first 13 plus
-three static dots, never scrolling. Global fallback and legacy clocks without an
-ID keep the date-only header.
+sender-resolved `/emote title` override or folder basename, via the existing
+`X-Emote-Project-Name` header. Names longer than 16 characters show the first 13
+plus three static dots, never scrolling. IDs remain identity only; missing names
+and the global fallback keep the date. Renames refresh within the same animation
+tick without replacing texture handles or changing avatar layout. The compact
+bitmap alphabet is unchanged: unsupported characters reserve blank cells.
 
 Unframed clocks use the same 8-logical-pixel rounded contour as avatar cards,
 with a background bounded exactly by their snapped 64×65 composition (including
