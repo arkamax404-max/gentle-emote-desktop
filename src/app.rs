@@ -1,14 +1,11 @@
 //! Native presentation: the network owns publication; this app owns GPU resources.
+use crate::idle_clock_image::{self, ANIMATION_PERIOD_MS};
 use crate::receiver::{Frame, LatestFrame, Receiver};
+use crate::sessions::SessionState;
 use eframe::egui::{
     self, ColorImage, PointerButton, TextureHandle, TextureOptions, Vec2, ViewportCommand,
 };
 use std::{collections::HashMap, sync::Arc, time::Duration};
-
-fn idle_clock_text(now: chrono::DateTime<chrono::FixedOffset>) -> String {
-    now.format("%H:%M:%S\n%d/%m/%Y\nWaiting Agents...")
-        .to_string()
-}
 
 struct AvatarTexture {
     uploaded: Arc<Frame>,
@@ -201,6 +198,8 @@ pub struct EmoteApp {
     latest: LatestFrame,
     textures: HashMap<Option<String>, AvatarTexture>,
     frame_texture: Option<TextureHandle>,
+    clock_texture: Option<TextureHandle>,
+    clock_step: Option<i64>,
     tile_size: f32,
     applied_size: Vec2,
     background_opacity: u8,
@@ -221,6 +220,8 @@ impl EmoteApp {
             _receiver: receiver,
             textures: HashMap::new(),
             frame_texture: None,
+            clock_texture: None,
+            clock_step: None,
             tile_size: 192.0,
             applied_size: Vec2::splat(192.0),
             background_opacity: 100,
@@ -242,14 +243,45 @@ impl EmoteApp {
     }
 
     /// Shared by the native app and small embedding examples. Input and receiver
-    /// notifications wake eframe; only clock mode schedules a one-second repaint.
+    /// notifications wake eframe; only clock mode schedules a 500ms repaint.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         // One atomic ordered snapshot; never hold the registry lock during GPU work.
         // Inactive final avatars intentionally use the same cache entry and pixels.
         let (snapshots, show_clock) = self.latest.display_snapshot();
+        // The internal pixel clock is shared by every clock tile and the
+        // global fallback: identical pixels, keyed on the 500ms animation
+        // step so a repaint between ticks never reuploads.
+        let any_clock = show_clock || snapshots.iter().any(|s| s.state == SessionState::Clock);
+        if any_clock {
+            let now = chrono::Local::now().fixed_offset();
+            let step = idle_clock_image::animation_step(now);
+            if self.clock_step != Some(step) {
+                let image = ColorImage::from_rgba_unmultiplied(
+                    [64, 64],
+                    &idle_clock_image::render(now).rgba,
+                );
+                match self.clock_texture.as_mut() {
+                    Some(texture) => texture.set(image, TextureOptions::NEAREST),
+                    None => {
+                        self.clock_texture = Some(ui.ctx().load_texture(
+                            "emote-idle-clock",
+                            image,
+                            TextureOptions::NEAREST,
+                        ));
+                    }
+                }
+                self.clock_step = Some(step);
+            }
+        }
         self.textures
             .retain(|key, _| snapshots.iter().any(|snapshot| &snapshot.session_id == key));
         for snapshot in &snapshots {
+            // Clock-state sessions render the shared internal clock texture;
+            // their received pixels stay validated in the registry but are
+            // never uploaded, and returning to normal reuploads on demand.
+            if snapshot.state == SessionState::Clock {
+                continue;
+            }
             let cached = self.textures.get_mut(&snapshot.session_id);
             if let Some(cached) = cached {
                 if !Arc::ptr_eq(&cached.uploaded, &snapshot.frame) {
@@ -347,7 +379,16 @@ impl EmoteApp {
             }
         }
         for (index, snapshot) in snapshots.iter().filter(|_| !show_clock).enumerate() {
-            let texture = &self.textures[&snapshot.session_id].texture;
+            // Idle sessions render the internal clock in their own tile while
+            // ordinary neighbors keep their received pixels.
+            let texture = if snapshot.state == SessionState::Clock {
+                self.clock_texture
+                    .as_ref()
+                    .expect("clock texture is prepared before painting clock tiles")
+            } else {
+                &self.textures[&snapshot.session_id].texture
+            };
+
             // Divide the full surface into neighboring tiles, preserving the single
             // avatar's fit even while the OS is processing a resize request.
             let (offset, size) = if vertical {
@@ -425,15 +466,21 @@ impl EmoteApp {
             }
         }
         if show_clock {
-            let clock = idle_clock_text(chrono::Local::now().fixed_offset());
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                clock,
-                egui::FontId::monospace((rect.width() / 13.0).clamp(8.0, 28.0)),
-                ui.visuals().text_color(),
-            );
-            ui.ctx().request_repaint_after(Duration::from_secs(1));
+            // Global fallback after the final explicit close: one internal
+            // clock, no decorative frame (same close behavior as before).
+            let texture = self
+                .clock_texture
+                .as_ref()
+                .expect("clock texture is prepared before painting clock mode");
+            let (_, image_rect) = snapped_physical_image_fit(rect, ui.ctx().pixels_per_point());
+            if image_rect.is_positive() {
+                ui.painter().image(
+                    texture.id(),
+                    image_rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
         } else if snapshots.is_empty() {
             ui.painter().text(
                 rect.center(),
@@ -442,6 +489,12 @@ impl EmoteApp {
                 egui::FontId::proportional(12.0),
                 ui.visuals().text_color(),
             );
+        }
+        // Clock animation ticks every 500ms (walkers advance, glyphs stay
+        // second-stable); avatars without clocks keep event-driven repaints.
+        if any_clock {
+            ui.ctx()
+                .request_repaint_after(Duration::from_millis(ANIMATION_PERIOD_MS));
         }
         let ctx = ui.ctx().clone();
         let menu_id = egui::ViewportId::from_hash_of("emote-options");
@@ -697,16 +750,6 @@ mod tests {
                 .commands
                 .is_empty(),
             "toggling transparency must not move, resize, or close the window"
-        );
-    }
-
-    #[test]
-    fn idle_clock_uses_local_date_across_utc_midnight() {
-        let utc = chrono::DateTime::parse_from_rfc3339("2026-01-01T01:02:03+00:00").unwrap();
-        let local = utc.with_timezone(&chrono::FixedOffset::west_opt(3 * 3600).unwrap());
-        assert_eq!(
-            idle_clock_text(local),
-            "22:02:03\n31/12/2025\nWaiting Agents..."
         );
     }
 

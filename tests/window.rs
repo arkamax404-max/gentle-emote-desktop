@@ -79,6 +79,17 @@ fn step(ctx: &egui::Context, app: &mut EmoteApp, events: Vec<Event>) -> Output {
 }
 
 fn session_request(address: std::net::SocketAddr, id: &str, seq: u64, kind: &str, shade: u8) {
+    session_request_state(address, id, seq, kind, shade, None);
+}
+
+fn session_request_state(
+    address: std::net::SocketAddr,
+    id: &str,
+    seq: u64,
+    kind: &str,
+    shade: u8,
+    state: Option<&str>,
+) {
     let mut png = Vec::new();
     if kind == "emote" {
         let mut encoder = png::Encoder::new(&mut png, 64, 64);
@@ -90,8 +101,11 @@ fn session_request(address: std::net::SocketAddr, id: &str, seq: u64, kind: &str
             .write_image_data(&[shade, 7, 9, 255].repeat(64 * 64))
             .unwrap();
     }
+    let state = state
+        .map(|value| format!("X-Emote-State: {value}\r\n"))
+        .unwrap_or_default();
     let mut socket = TcpStream::connect(address).unwrap();
-    write!(socket, "POST /{kind} HTTP/1.1\r\nHost: localhost\r\nContent-Type: image/png\r\nX-Emote-Version: 1\r\nX-Emote-Session-Id: {id}\r\nX-Emote-Stream-Id: stream-{id}\r\nX-Emote-Sequence: {seq}\r\nContent-Length: {}\r\n\r\n", png.len()).unwrap();
+    write!(socket, "POST /{kind} HTTP/1.1\r\nHost: localhost\r\nContent-Type: image/png\r\nX-Emote-Version: 1\r\n{state}X-Emote-Session-Id: {id}\r\nX-Emote-Stream-Id: stream-{id}\r\nX-Emote-Sequence: {seq}\r\nContent-Length: {}\r\n\r\n", png.len()).unwrap();
     socket.write_all(&png).unwrap();
     let mut response = String::new();
     socket.read_to_string(&mut response).unwrap();
@@ -1568,7 +1582,7 @@ fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
     let retained = step(&ctx, &mut app, vec![]);
     assert!(avatars(&retained).is_empty());
     assert!(frames(&retained).is_empty());
-    assert!(has_clock(&retained));
+    assert_eq!(clock_meshes(&retained).len(), 1);
     assert!(retained.textures_delta.free.is_empty());
     assert!(
         retained.viewport_output[&egui::ViewportId::ROOT]
@@ -1589,67 +1603,154 @@ fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
     );
 }
 
-fn has_clock(output: &Output) -> bool {
-    output.shapes.iter().any(|shape| {
-        matches!(&shape.shape, egui::Shape::Text(text)
-            if text.galley.text().ends_with("\nWaiting Agents...")
-                && text.galley.text().len() == 37
-                && text.galley.text().as_bytes()[2] == b':'
-                && text.galley.text().as_bytes()[5] == b':'
-                && text.galley.text()[..8].bytes().enumerate().all(|(i, b)|
-                    i == 2 || i == 5 || b.is_ascii_digit())
-                && text.galley.text().as_bytes()[8] == b'\n'
-                && text.galley.text()[9..19].bytes().enumerate().all(|(i, b)|
-                    if i == 2 || i == 5 { b == b'/' } else { b.is_ascii_digit() }))
-    })
+fn clock_meshes(output: &Output) -> Vec<(egui::TextureId, egui::Rect)> {
+    output
+        .shapes
+        .iter()
+        .filter_map(|shape| {
+            if let egui::Shape::Mesh(mesh) = &shape.shape
+                && output
+                    .1
+                    .get(&mesh.texture_id)
+                    .is_some_and(|name| name == "emote-idle-clock")
+            {
+                Some((mesh.texture_id, mesh.calc_bounds()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn clock_uploads(output: &Output) -> Vec<&egui::epaint::ImageDelta> {
+    output
+        .textures_delta
+        .set
+        .values()
+        .flatten()
+        .filter(|delta| delta.image.size() == [64, 64])
+        .collect()
 }
 
 #[test]
-fn sole_avatar_close_immediately_shows_clock_and_new_avatar_replaces_it() {
+fn sole_avatar_close_immediately_shows_internal_pixel_clock_and_new_avatar_replaces_it() {
     let (ctx, mut app, address) = setup();
     let waiting = step(&ctx, &mut app, vec![]);
-    assert!(!has_clock(&waiting));
+    assert!(clock_meshes(&waiting).is_empty());
     assert!(waiting.shapes.iter().any(|s| matches!(&s.shape,
         egui::Shape::Text(t) if t.galley.text().starts_with("Waiting for emote"))));
     drop(waiting);
     session_request(address, "a", 1, "emote", 42);
     let active = step(&ctx, &mut app, vec![]);
     assert_eq!(avatars(&active).len(), 1);
-    assert!(!has_clock(&active));
+    assert!(clock_meshes(&active).is_empty());
     drop(active);
     session_request(address, "a", 2, "emote/close", 0);
+    // The first clock appearance uploads the shared internal clock texture:
+    // 64x64, nearest-neighbor, transparent gaps with opaque ink pixels.
+    let first = step(&ctx, &mut app, vec![]);
+    let uploads = clock_uploads(&first);
+    assert_eq!(uploads.len(), 1, "the internal clock texture uploads once");
+    assert_eq!(uploads[0].options, egui::TextureOptions::NEAREST);
+    let egui::ImageData::Color(image) = &uploads[0].image;
+    let opaque = image.pixels.iter().filter(|p| p.a() == 255).count();
+    let clear = image.pixels.iter().filter(|p| p.a() == 0).count();
+    assert!(
+        opaque > 500 && clear > 1000,
+        "clock ink must stay opaque with transparent gaps"
+    );
+    assert_eq!(clock_meshes(&first).len(), 1);
+    drop(first);
     for size in [128.0, 192.0, 256.0, 384.0] {
         let clock = surface_step(&ctx, &mut app, Vec2::splat(size));
-        assert!(has_clock(&clock));
+        let clocks = clock_meshes(&clock);
+        assert_eq!(
+            clocks.len(),
+            1,
+            "the global fallback paints one internal pixel clock"
+        );
         let surface = egui::Rect::from_min_size(Pos2::ZERO, Vec2::splat(size));
-        let text = clock
-            .shapes
-            .iter()
-            .find_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) if text.galley.text().ends_with("\nWaiting Agents...") => {
-                    Some(text)
-                }
-                _ => None,
-            })
-            .expect("clock text must be painted");
-        let painted_bounds = text.galley.mesh_bounds.translate(text.pos.to_vec2());
+        let (_, expected) = snapped_physical_image_fit(surface, ctx.pixels_per_point());
         assert!(
-            surface.contains_rect(painted_bounds),
-            "clock text must fit at {size}: {painted_bounds:?}"
+            (clocks[0].1.min - expected.min).length() < 1e-3
+                && (clocks[0].1.max - expected.max).length() < 1e-3,
+            "the global fallback clock must use the whole-physical-pixel fit at {size}"
         );
         assert!(avatars(&clock).is_empty());
         assert!(frames(&clock).is_empty());
         assert!(!clock.shapes.iter().any(|s| matches!(&s.shape,
             egui::Shape::Text(t) if t.galley.text().starts_with("Waiting for emote"))));
+        // A 500ms animation-step boundary may fall between public renders and
+        // reupload the shared clock texture; nothing else may ever upload here.
+        assert!(clock.textures_delta.set.keys().all(|id| {
+            clock
+                .1
+                .get(id)
+                .is_some_and(|name| name == "emote-idle-clock")
+        }));
         assert!(
             clock.viewport_output[&egui::ViewportId::ROOT].repaint_delay
-                <= std::time::Duration::from_secs(1)
+                <= std::time::Duration::from_millis(500)
         );
     }
     session_request(address, "b", 1, "emote", 84);
     let restored = step(&ctx, &mut app, vec![]);
     assert_eq!(avatars(&restored).len(), 1);
-    assert!(!has_clock(&restored));
+    assert!(clock_meshes(&restored).is_empty());
+}
+
+#[test]
+fn per_session_clock_tiles_run_alongside_normal_avatars_without_hiding_them() {
+    let (ctx, mut app, address) = setup();
+    step(&ctx, &mut app, vec![]);
+    // Session a declares the clock state; session b sends ordinary pixels.
+    session_request_state(address, "a", 1, "emote", 42, Some("clock"));
+    session_request(address, "b", 1, "emote", 84);
+    let mixed = wide_step(&ctx, &mut app, 384.0);
+    let tiles = clock_meshes(&mixed);
+    assert_eq!(
+        tiles.len(),
+        1,
+        "each idle session renders its own internal clock tile"
+    );
+    assert_eq!(
+        avatars(&mixed).len(),
+        1,
+        "the active normal session keeps its own tile"
+    );
+    assert!(
+        tiles[0].1.right() < avatars(&mixed)[0].1.left(),
+        "stable tile order: the clock session keeps its first-seen tile"
+    );
+    assert!(tiles[0].1.left() < avatars(&mixed)[0].1.left());
+    assert_eq!(
+        frames(&mixed).len(),
+        2,
+        "per-session clock tiles keep the normal tile frame"
+    );
+    assert_eq!(
+        clock_uploads(&mixed).len(),
+        2,
+        "only the normal session's pixels and the shared clock texture upload"
+    );
+    drop(mixed);
+    // An ordinary image state exits the clock for that session only.
+    session_request_state(address, "a", 2, "emote", 126, None);
+    let restored = wide_step(&ctx, &mut app, 384.0);
+    assert!(clock_meshes(&restored).is_empty());
+    assert_eq!(avatars(&restored).len(), 2);
+    assert_eq!(
+        restored
+            .textures_delta
+            .set
+            .values()
+            .flatten()
+            .filter(|d| d.image.size() == [64, 64])
+            .count(),
+        1,
+        "returning to normal uploads only that session's pixels"
+    );
+    drop(restored);
 }
 
 #[test]

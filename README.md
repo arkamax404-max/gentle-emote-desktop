@@ -110,15 +110,23 @@ Session-aware frames use `X-Emote-Session-Id` plus stream/sequence headers on th
 existing version-1 PNG endpoint. Distinct sessions appear in stable first-seen
 order; updates affect only their own tile. Closing or timing out a session removes
 its tile while others remain. Explicitly closing the last active session, with
-no legacy avatar present, immediately replaces its display with a clock labelled
-local `HH:MM:SS`, the date `DD/MM/YYYY`, and `Waiting Agents...` on separate
-lines, refreshed once per second. A new or reactivated session replaces
-the clock; drag and options remain available. Startup still shows Waiting, and
+no legacy avatar present, immediately replaces its display with the internally
+rendered Lemmings pixel clock: the same 64x64 artwork as the sender display
+(local `DD/MM/YYYY` and 24h `HH:MM:SS` glyphs, walking Lemmings on a green path).
+The desktop renders that clock internally, so senders activate it per session
+with `X-Emote-State: clock` on the ordinary image endpoint; any ordinary image
+state (or absent/unknown state value) restores the received pixels. An idle
+session's clock tile never hides active neighbors, keeps the normal tile frame,
+and the surface repaints every 500ms while any clock is visible (walkers advance
+each 500ms tick; time glyphs stay second-stable). The final-close fallback clock
+renders without a frame, as before. A new or reactivated session replaces
+either clock; drag and options remain available. Startup still shows Waiting, and
 timeout of the last session still retains its image (a delayed close after timeout
-does not enable the clock). Senders heartbeat every 5 seconds; accepted
-frames/heartbeats renew a 30-second lease. Heartbeats never upload image pixels.
-Legacy frames without a session ID still update one nonexpiring singleton avatar,
-which can coexist with session-aware tiles. See the [protocol](docs/protocol.md)
+does not enable the clock; timeout alone never starts the fallback clock). Senders
+heartbeat every 5 seconds; accepted frames/heartbeats renew a 30-second lease.
+Heartbeats never upload image pixels. Legacy frames without a session ID still
+update one nonexpiring singleton avatar, which can coexist with session-aware
+tiles and may also declare `X-Emote-State: clock`. See the [protocol](docs/protocol.md)
 for exact headers, limits, finite replay protection, and lifecycle rules.
 
 ## Learn and verify

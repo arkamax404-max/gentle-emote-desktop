@@ -100,6 +100,7 @@ frame publication, stream ordering, heartbeat leases, close, and expiry. Its
 | `session_id: Option<String>` | Stable texture-cache key; `None` is the legacy singleton |
 | `frame: Arc<Frame>` | Immutable shared 64 × 64 × 4 unpremultiplied RGBA8 pixels |
 | `active: bool` | Active avatar, or the inactive final image retained when none remain |
+| `state: SessionState` | Sender-declared presentation: `Normal` pixels or the internal `Clock` |
 
 Active avatars appear in stable first-seen order. When none remain, the final
 removed avatar remains in compatibility snapshots. Timeout keeps it visible;
@@ -109,12 +110,23 @@ not enable the clock. A new or reactivated session replaces either presentation,
 rather than appending to a dead placeholder. Legacy traffic is a nonexpiring singleton
 ordered before session keys. The GUI uses registry ordering, never HashMap order.
 
+A session whose latest frame carries `X-Emote-State: clock` renders the internal
+pixel clock (`idle_clock_image`, ported 1:1 from the canonical Lemmings renderer)
+in its own tile with the normal tile frame, never hiding active neighbors; any
+ordinary image state exits it. All clock tiles share one texture keyed on the
+500ms animation step, so repaints between ticks never reupload, and the window
+schedules a 500ms repaint only while a clock is visible. The final-close clock
+renders full-surface without a decorative frame. Received clock-state PNG bodies
+stay validated and stored, but their pixels are not uploaded while the internal
+clock is shown.
+
 `LatestFrame::get()` remains a compatibility API returning the last accepted image
 from any session (initially `None`), unaffected by lifecycle-only traffic. Both
 APIs release the mutex before the caller converts pixels, uploads, or paints.
 The app's crate-private `display_snapshot()` reads snapshots and the registry's
 `show_clock()` flag together under that same lock. Clock mode retains cached
-textures but paints neither avatar nor frame; drag and options stay available.
+session textures but paints neither avatar nor frame in global clock mode; drag
+and options stay available.
 Pixel Arcs remain readable after replacement and shutdown.
 
 Repaint callbacks run outside the lock after image publication or visible lifecycle
