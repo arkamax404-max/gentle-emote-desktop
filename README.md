@@ -137,9 +137,10 @@ case-sensitive session ID. IDs longer than 16 characters show the first 13 plus
 three static dots, never scrolling. Global fallback and legacy clocks without an
 ID keep the date-only header.
 
-Unframed clocks have square corners and a background bounded exactly by their
-snapped 64×65 composition (including the blank row above the image), preserving
-the full-width bottom path. Background opacity still applies, with no underlay
+Unframed clocks use the same 8-logical-pixel rounded contour as avatar cards,
+with a background bounded exactly by their snapped 64×65 composition (including
+the blank row above the image). The artwork, including the bottom path ends,
+is clipped to that contour. Background opacity still applies, with no underlay
 at zero. Mixed clock/avatar groups retain the ordinary uniform slots, insets,
 canvas and avatar geometry. When every visible tile is a clock, unframed groups
 omit the four-point card insets: at slider step `s`, `n` clocks request

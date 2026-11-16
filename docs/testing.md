@@ -462,8 +462,8 @@ These header/cache checks do not establish compact clock layout or native visual
 ### Compact clock geometry checks
 
 Three `compact_clock_*` public HTTP/headless-egui tests cover mixed-neighbor
-mesh/UV/texture/background preservation, compact square underlays and full-UV
-clock quads, all-clock native size requests and explicitly applied viewports,
+mesh/UV/texture/background preservation, compact rounded underlays and clipped
+clock path corners, all-clock native size requests and explicitly applied viewports,
 and restoration of padded mixed sizing. The matrix exercises both orientations,
 steps x1/x3/x5, DPI 1/1.25/1.61, and opaque No-frame/partial/zero backgrounds.
 Single/global checks preserve date-only fallback, explicit framed-clock preference,

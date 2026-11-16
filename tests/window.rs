@@ -2042,14 +2042,15 @@ fn assert_compact_clock(output: &Output, opacity: u8) {
     let backgrounds = compact_backgrounds(output);
     for (id, image) in clock_meshes(output) {
         let mesh = avatar_mesh(output, id);
-        assert_eq!(mesh.vertices.len(), 4, "clock must retain its raw quad");
-        for uv in [
-            Pos2::ZERO,
-            Pos2::new(1.0, 0.0),
-            Pos2::new(0.0, 1.0),
-            Pos2::new(1.0, 1.0),
-        ] {
-            assert!(mesh.vertices.iter().any(|v| v.uv == uv));
+        assert!(
+            mesh.vertices.len() > 4,
+            "clock artwork must follow its rounded card"
+        );
+        for uv in [Pos2::new(0.0, 1.0), Pos2::new(1.0, 1.0)] {
+            assert!(
+                !mesh.vertices.iter().any(|v| v.uv == uv),
+                "opaque path corners must be clipped, not painted over the rounded background"
+            );
         }
         let composition =
             egui::Rect::from_min_max(image.min - Vec2::new(0.0, image.width() / 64.0), image.max);
@@ -2061,7 +2062,7 @@ fn assert_compact_clock(output: &Output, opacity: u8) {
                         && (r.rect.max - composition.max).length() < 0.001
                 })
                 .expect("clock background must fit the exact 64x65 composition");
-            assert_eq!(bg.corner_radius, egui::CornerRadius::ZERO);
+            assert_eq!(bg.corner_radius, egui::CornerRadius::same(8));
             assert_eq!(bg.fill.a(), ((u16::from(opacity) * 255 + 50) / 100) as u8);
         } else {
             assert!(backgrounds.is_empty());

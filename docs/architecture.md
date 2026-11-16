@@ -289,8 +289,9 @@ background setting, root window dimensions or the unframed single-avatar fit. Du
 surfaces too narrow for the gaps, spacing is clamped rather than creating
 negative image sizes. Toggling either presentation option reuses cached textures.
 
-Unframed clocks are the exception to avatar card contours: the existing snapped
-fit supplies both the raw full-UV image quad and its square 64×65 background.
+Unframed clocks keep their existing snapped fit and compact 64×65 background,
+but share the avatar card's rounded contour. The existing rounded-image painter
+clips the opaque path ends as well as the image, without changing cached pixels.
 The underlay starts one fitted source row above the image, not at the outer card.
 The outer background pass skips those clocks; opacity conversion is unchanged.
 Mixed groups retain every old slot/inset and normal-avatar origin. Only nonempty

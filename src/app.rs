@@ -183,29 +183,25 @@ fn paint_rounded_card_image(
     painter.add(egui::Shape::mesh(mesh));
 }
 
-/// Clock artwork includes a full-width path: neither its image nor its
-/// composition background uses the ordinary avatar's rounded contour.
+/// Keep the compact clock composition while sharing the avatar card contour.
+/// Clip its opaque path ends too, so they cannot cover the rounded background.
 fn paint_clock_image(
     painter: &egui::Painter,
     texture: egui::TextureId,
     image: egui::Rect,
     scale: f32,
     opacity: u8,
+    radius: f32,
 ) {
     if !image.is_positive() {
         return;
     }
+    let composition = egui::Rect::from_min_max(image.min - egui::vec2(0.0, scale), image.max);
     if opacity > 0 {
-        let composition = egui::Rect::from_min_max(image.min - egui::vec2(0.0, scale), image.max);
         let alpha = ((u16::from(opacity) * 255 + 50) / 100) as u8;
-        painter.rect_filled(composition, 0.0, egui::Color32::from_black_alpha(alpha));
+        painter.rect_filled(composition, radius, egui::Color32::from_black_alpha(alpha));
     }
-    painter.image(
-        texture,
-        image,
-        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
-        egui::Color32::WHITE,
-    );
+    paint_rounded_card_image(painter, texture, image, composition, radius);
 }
 
 pub fn native_options() -> eframe::NativeOptions {
@@ -501,6 +497,7 @@ impl EmoteApp {
                     image_rect,
                     scale,
                     self.background_opacity,
+                    radius,
                 );
             } else if let Some((span, gap)) = packed_layout {
                 paint_rounded_card_image(
@@ -542,6 +539,7 @@ impl EmoteApp {
                 image_rect,
                 scale,
                 self.background_opacity,
+                radius,
             );
         } else if snapshots.is_empty() {
             ui.painter().text(
