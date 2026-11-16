@@ -428,6 +428,25 @@ and unchanged compatibility snapshots/latest. Receiver HTTP checks cover the
 regressions do not establish native visual acceptance. Current execution
 results are reported separately; earlier milestone results above are historical.
 
+### Additive session-header renderer checks (not app activation)
+
+`cargo test --offline --test idle_clock_image` runs the four unchanged canonical
+checks plus three public-RGBA session-header checks. The new API is
+`render_for_session(now: DateTime<FixedOffset>, session_id: &str) -> Frame`;
+app/cache integration is still pending. Assertions cover exact 4999/5000/9999/
+10000ms boundaries, negative Unix buckets, byte-identical date phases and empty-ID
+fallback, different session headers at the same instant, and identical pixels
+outside rows 1–5. Static ellipsis checks cover 16/17/128-character IDs, the 63-pixel
+fit, exact dot pixels, and header stability while the clock continues updating.
+Every validated ASCII ID character has ink in its single centered cell, and
+uppercase/lowercase pairs remain distinct. The canonical golden is unchanged.
+
+The test-first baseline explicitly scaffolded the new API as delegation to
+`render(now)`, not as a pre-existing API. All three new tests then failed actual
+pixel assertions (phase, ellipsis, and charset placement); compilation alone was
+not counted as RED. These pure checks do not establish app alternation, GPU cache
+isolation, compact layout, or native visual acceptance.
+
 ## Understand the test-only TCP reset correction
 
 An early rejection (for example, an oversized upload returning 413) can close a

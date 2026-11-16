@@ -1,7 +1,112 @@
 use chrono::{DateTime, TimeDelta};
-use gentle_emote_desktop::idle_clock_image::{animation_step, render};
+use gentle_emote_desktop::idle_clock_image::{animation_step, render, render_for_session};
 
 const GOLDEN: &str = include_str!("fixtures/idle-clock-golden.json");
+
+fn header(rgba: &[u8]) -> &[u8] {
+    &rgba[64 * 4..6 * 64 * 4]
+}
+
+fn assert_only_header_changes(now: DateTime<chrono::FixedOffset>, id: &str) {
+    let original = render(now).rgba;
+    let session = render_for_session(now, id).rgba;
+    assert_eq!(original.len(), session.len());
+    assert_eq!(&original[..64 * 4], &session[..64 * 4]);
+    assert_eq!(&original[6 * 64 * 4..], &session[6 * 64 * 4..]);
+}
+
+#[test]
+fn session_header_alternates_at_absolute_five_second_boundaries() {
+    let epoch = at("1970-01-01T00:00:00+00:00");
+    for millis in [0, 4999, 5000, 9999, 10000, -1, -5000, -5001] {
+        let now = epoch + TimeDelta::milliseconds(millis);
+        let original = render(now).rgba;
+        let session = render_for_session(now, "Ab_9:-.z").rgba;
+        if millis.div_euclid(5000).rem_euclid(2) == 0 {
+            assert_eq!(session, original, "date phase at {millis}ms");
+        } else {
+            assert_ne!(
+                header(&session),
+                header(&original),
+                "ID phase at {millis}ms"
+            );
+            assert_ne!(
+                header(&session),
+                header(&render_for_session(now, "Other").rgba),
+                "session identity must affect the header"
+            );
+        }
+        assert_only_header_changes(now, "Ab_9:-.z");
+        assert_eq!(render_for_session(now, "").rgba, original);
+    }
+}
+
+#[test]
+fn session_header_ellipsis_is_static_and_fits_sixteen_cells() {
+    let now = at("1970-01-01T00:00:05+00:00");
+    let sixteen = "AbcdefghijklmNOP";
+    let seventeen = "AbcdefghijklmNOPq";
+    let truncated = render_for_session(now, seventeen).rgba;
+    let expected = render_for_session(now, "Abcdefghijklm...").rgba;
+    assert_ne!(
+        header(&render_for_session(now, sixteen).rgba),
+        header(&truncated),
+        "16 cells stay intact; 17 cells require an ellipsis"
+    );
+    assert_eq!(header(&truncated), header(&expected));
+    let longest = format!("Abcdefghijklm{}", "X".repeat(115));
+    assert_eq!(longest.len(), 128);
+    assert_eq!(
+        header(&render_for_session(now, &longest).rgba),
+        header(&expected)
+    );
+    for millis in [500, 1000, 4999] {
+        let later = now + TimeDelta::milliseconds(millis);
+        let pixels = render_for_session(later, seventeen).rgba;
+        assert_eq!(header(&pixels), header(&expected), "no scrolling");
+        assert_only_header_changes(later, seventeen);
+    }
+    // Sixteen 3-pixel glyphs and fifteen 1-pixel gaps occupy exactly 63 pixels.
+    // The three final period cells begin at x=52, 56 and 60; each dot is centered.
+    for x in [53, 57, 61] {
+        let index = (5 * 64 + x) * 4;
+        assert_eq!(&truncated[index..index + 4], &[147, 181, 160, 255]);
+    }
+    for y in 1..=5 {
+        assert_eq!(&truncated[(y * 64 + 63) * 4..(y * 64 + 64) * 4], &[0; 4]);
+    }
+    assert_only_header_changes(now, sixteen);
+    assert_only_header_changes(now, &longest);
+}
+
+#[test]
+fn session_header_supports_every_validated_ascii_id_character_and_case() {
+    let now = at("1970-01-01T00:00:05+00:00");
+    for ch in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:-".chars() {
+        let pixels = render_for_session(now, &ch.to_string()).rgba;
+        assert!(
+            header(&pixels)
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|p| p == &[147, 181, 160, 255])
+        );
+        // A single cell is centered at x=30; no date or neighboring cells remain.
+        for y in 1..=5 {
+            for x in 0..64 {
+                if !(30..33).contains(&x) {
+                    assert_eq!(&pixels[(y * 64 + x) * 4..(y * 64 + x + 1) * 4], &[0; 4]);
+                }
+            }
+        }
+    }
+    for ch in 'A'..='Z' {
+        assert_ne!(
+            header(&render_for_session(now, &ch.to_string()).rgba),
+            header(&render_for_session(now, &ch.to_ascii_lowercase().to_string()).rgba)
+        );
+    }
+}
 
 fn at(iso: &str) -> DateTime<chrono::FixedOffset> {
     DateTime::parse_from_rfc3339(iso).unwrap()

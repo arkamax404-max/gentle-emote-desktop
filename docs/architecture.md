@@ -120,6 +120,19 @@ renders full-surface without a decorative frame. Received clock-state PNG bodies
 stay validated and stored, but their pixels are not uploaded while the internal
 clock is shown.
 
+The pure renderer also exposes
+`render_for_session(now: DateTime<FixedOffset>, session_id: &str) -> Frame`.
+It alternates date and validated ASCII ID in absolute five-second Unix buckets:
+0–4999ms is date, 5000–9999ms is ID, then date again (Euclidean division also
+handles pre-epoch instants). Empty IDs return the original date-only `render(now)`.
+The ID preserves `[A-Za-z0-9._:-]` case in muted 3×5 glyphs on rows 1–5.
+At most 16 fixed cells fit: `16×3 + 15×1 = 63` pixels. Longer IDs show their
+first 13 characters plus three static dots, never scrolling. ID-only glyphs do
+not change canonical date/time typography, even for negative years; all pixels
+outside the header still come from `render(now)`, including 500ms walkers.
+**This additive API is not yet wired into the app or its shared clock cache**;
+the running app still uses the date-only renderer described above.
+
 `LatestFrame::get()` remains a compatibility API returning the last accepted image
 from any session (initially `None`), unaffected by lifecycle-only traffic. Both
 APIs release the mutex before the caller converts pixels, uploads, or paints.
