@@ -2,7 +2,7 @@ use gentle_emote_desktop::{
     receiver::Frame,
     sessions::{
         Event, MAX_ACTIVE_SESSIONS, MAX_KNOWN_SESSIONS, MAX_RETIRED_STREAMS, SESSION_TIMEOUT,
-        SessionRegistry,
+        SessionRegistry, SessionState,
     },
 };
 use std::{
@@ -11,9 +11,21 @@ use std::{
 };
 
 fn frame(value: u8) -> Event {
-    Event::Frame(Arc::new(Frame {
-        rgba: vec![value; 16384],
-    }))
+    Event::Frame(
+        Arc::new(Frame {
+            rgba: vec![value; 16384],
+        }),
+        SessionState::Normal,
+    )
+}
+
+fn clock_frame(value: u8) -> Event {
+    Event::Frame(
+        Arc::new(Frame {
+            rgba: vec![value; 16384],
+        }),
+        SessionState::Clock,
+    )
 }
 
 #[test]
@@ -231,7 +243,7 @@ fn legacy_publication_suppresses_clock_and_legacy_prevents_final_close_clock() {
     let legacy = Arc::new(Frame {
         rgba: vec![9; 16384],
     });
-    r.publish_legacy(legacy.clone());
+    r.publish_legacy(legacy.clone(), SessionState::Normal);
     assert!(!r.show_clock());
     r.apply("b", "s", 1, frame(2), now).unwrap();
     assert!(r.apply("b", "s", 2, Event::Close, now).unwrap());
@@ -250,12 +262,52 @@ fn legacy_slot_and_pixel_snapshots_remain_compatible() {
     let old = Arc::new(Frame {
         rgba: vec![1; 16384],
     });
-    r.publish_legacy(old.clone());
-    r.publish_legacy(Arc::new(Frame {
-        rgba: vec![2; 16384],
-    }));
+    r.publish_legacy(old.clone(), SessionState::Normal);
+    r.publish_legacy(
+        Arc::new(Frame {
+            rgba: vec![2; 16384],
+        }),
+        SessionState::Normal,
+    );
     assert_eq!(old.rgba[0], 1);
     assert_eq!(r.latest().unwrap().rgba[0], 2);
     assert_eq!(r.snapshots().len(), 1);
     assert!(r.snapshots()[0].session_id.is_none());
+}
+
+#[test]
+fn state_metadata_travels_through_snapshots_lifecycle_and_legacy() {
+    let mut r = SessionRegistry::default();
+    let now = Instant::now();
+    r.apply("a", "s", 1, frame(1), now).unwrap();
+    assert_eq!(r.snapshots()[0].state, SessionState::Normal);
+    r.apply("a", "s", 2, clock_frame(2), now).unwrap();
+    assert_eq!(r.snapshots()[0].state, SessionState::Clock);
+    // Heartbeats preserve the stored state.
+    r.apply("a", "s", 3, Event::Heartbeat, now).unwrap();
+    assert_eq!(r.snapshots()[0].state, SessionState::Clock);
+    // An ordinary image state exits the clock.
+    r.apply("a", "s", 4, frame(3), now).unwrap();
+    assert_eq!(r.snapshots()[0].state, SessionState::Normal);
+    // Final explicit close still shows the global clock and retains the state.
+    r.apply("a", "s", 5, Event::Close, now).unwrap();
+    assert!(r.show_clock());
+    assert_eq!(r.snapshots()[0].state, SessionState::Normal);
+    // Expiry retention carries the session's stored state too.
+    r.apply("b", "s", 1, clock_frame(4), now).unwrap();
+    assert!(!r.show_clock());
+    assert!(r.expire(now + SESSION_TIMEOUT));
+    assert!(!r.show_clock(), "timeout alone never enables the clock");
+    assert_eq!(r.snapshots()[0].state, SessionState::Clock);
+    // Legacy snapshots carry their own state.
+    r.publish_legacy(
+        Arc::new(Frame {
+            rgba: vec![9; 16384],
+        }),
+        SessionState::Clock,
+    );
+    assert!(!r.show_clock());
+    assert_eq!(r.snapshots().len(), 1);
+    assert_eq!(r.snapshots()[0].session_id, None);
+    assert_eq!(r.snapshots()[0].state, SessionState::Clock);
 }

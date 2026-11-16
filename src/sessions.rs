@@ -11,6 +11,17 @@ pub const MAX_ACTIVE_SESSIONS: usize = 32;
 pub const MAX_KNOWN_SESSIONS: usize = 64;
 pub const MAX_RETIRED_STREAMS: usize = 16;
 
+/// Sender-declared presentation state carried on the latest accepted frame.
+/// `Clock` renders the desktop's internal pixel clock in that session's tile;
+/// any ordinary image state (and every unknown/absent metadata value, which
+/// the receiver maps here) renders the received pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SessionState {
+    #[default]
+    Normal,
+    Clock,
+}
+
 /// Visible avatars, in first-seen order. `None` identifies the legacy single slot.
 /// An inactive snapshot is the retained final avatar, not a live lease.
 #[derive(Clone, Debug)]
@@ -18,10 +29,11 @@ pub struct SessionSnapshot {
     pub session_id: Option<String>,
     pub frame: Arc<Frame>,
     pub active: bool,
+    pub state: SessionState,
 }
 
 pub enum Event {
-    Frame(Arc<Frame>),
+    Frame(Arc<Frame>, SessionState),
     Heartbeat,
     Close,
 }
@@ -35,6 +47,7 @@ struct Session {
     sequence: u64,
     retired: VecDeque<String>,
     frame: Arc<Frame>,
+    state: SessionState,
     active: bool,
     closed: bool,
     seen: Instant,
@@ -46,6 +59,7 @@ struct Session {
 pub struct SessionRegistry {
     sessions: Vec<Session>,
     legacy: Option<Arc<Frame>>,
+    legacy_state: SessionState,
     latest: Option<Arc<Frame>>,
     retained: Option<SessionSnapshot>,
     clock_after_close: bool,
@@ -68,6 +82,7 @@ impl SessionRegistry {
                 session_id: None,
                 frame: frame.clone(),
                 active: true,
+                state: self.legacy_state,
             });
         }
         snapshots.extend(
@@ -78,6 +93,7 @@ impl SessionRegistry {
                     session_id: Some(s.id.clone()),
                     frame: s.frame.clone(),
                     active: true,
+                    state: s.state,
                 }),
         );
         if snapshots.is_empty() {
@@ -86,9 +102,10 @@ impl SessionRegistry {
         snapshots
     }
 
-    pub fn publish_legacy(&mut self, frame: Arc<Frame>) {
+    pub fn publish_legacy(&mut self, frame: Arc<Frame>, state: SessionState) {
         self.latest = Some(frame.clone());
         self.legacy = Some(frame);
+        self.legacy_state = state;
         self.retained = None;
         self.clock_after_close = false;
     }
@@ -104,7 +121,7 @@ impl SessionRegistry {
         now: Instant,
     ) -> Result<bool, CapacityError> {
         let index = self.sessions.iter().position(|s| s.id == id);
-        let is_frame = matches!(event, Event::Frame(_));
+        let is_frame = matches!(event, Event::Frame(..));
         if let Some(i) = index {
             let s = &self.sessions[i];
             if s.retired.iter().any(|old| old == stream)
@@ -138,7 +155,7 @@ impl SessionRegistry {
                         .ok_or(CapacityError)?;
                     self.sessions.remove(victim);
                 }
-                let Event::Frame(frame) = &event else {
+                let Event::Frame(frame, _) = &event else {
                     unreachable!()
                 };
                 self.sessions.push(Session {
@@ -147,6 +164,7 @@ impl SessionRegistry {
                     sequence,
                     retired: VecDeque::new(),
                     frame: frame.clone(),
+                    state: SessionState::Normal,
                     active: false,
                     closed: false,
                     seen: now,
@@ -166,8 +184,9 @@ impl SessionRegistry {
         s.sequence = sequence;
         s.seen = now;
         let changed = match event {
-            Event::Frame(frame) => {
+            Event::Frame(frame, state) => {
                 s.frame = frame.clone();
+                s.state = state;
                 self.latest = Some(frame);
                 true
             }
@@ -184,6 +203,7 @@ impl SessionRegistry {
                 session_id: Some(s.id.clone()),
                 frame: s.frame.clone(),
                 active: false,
+                state: s.state,
             });
         }
         if !activates && changed {
@@ -203,6 +223,7 @@ impl SessionRegistry {
                     session_id: Some(s.id.clone()),
                     frame: s.frame.clone(),
                     active: false,
+                    state: s.state,
                 });
                 changed = true;
             }

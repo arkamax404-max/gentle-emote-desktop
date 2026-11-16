@@ -1,4 +1,5 @@
 use gentle_emote_desktop::receiver::{BODY_TIMEOUT, MAX_BODY_BYTES, Receiver};
+use gentle_emote_desktop::sessions::SessionState;
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
@@ -244,6 +245,13 @@ const HEADERS: &str = "Content-Type: image/png\r\nX-Emote-Version: 1\r\n";
 fn session_headers(session: &str, stream: &str, sequence: &str) -> String {
     format!(
         "{HEADERS}X-Emote-Session-Id: {session}\r\nX-Emote-Stream-Id: {stream}\r\nX-Emote-Sequence: {sequence}\r\n"
+    )
+}
+
+fn session_state_headers(session: &str, stream: &str, sequence: &str, state: &str) -> String {
+    format!(
+        "{}X-Emote-State: {state}\r\n",
+        session_headers(session, stream, sequence)
     )
 }
 
@@ -909,6 +917,76 @@ fn chunked_rgb_and_sender_metadata_are_supported() {
             .all(|p| *p == [12, 12, 12, 255])
     );
     assert_eq!(count.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn x_emote_state_clock_maps_to_internal_state_and_other_values_stay_normal() {
+    let (receiver, count) = start();
+    let address = receiver.local_addr();
+    // A legacy frame declaring the clock state renders internally per session
+    // semantics but keeps the ordinary legacy singleton slot.
+    assert_response(
+        &request(
+            address,
+            "POST",
+            "/emote",
+            "Content-Type: image/png\r\nX-Emote-Version: 1\r\nX-Emote-State: clock\r\n",
+            &png(64, 64, 1),
+        ),
+        204,
+        "",
+    );
+    let legacy = receiver.latest().snapshots();
+    assert_eq!(legacy.len(), 1);
+    assert_eq!(legacy[0].session_id, None);
+    assert_eq!(legacy[0].state, SessionState::Clock);
+    assert!(legacy[0].active);
+    // Unknown state metadata stays accepted-and-ignored (normal avatar).
+    assert_response(
+        &request(
+            address,
+            "POST",
+            "/emote",
+            &session_state_headers("s1", "st", "0", "thinking"),
+            &png(64, 64, 2),
+        ),
+        204,
+        "",
+    );
+    // The documented clock value maps to the internal clock state.
+    assert_response(
+        &request(
+            address,
+            "POST",
+            "/emote",
+            &session_state_headers("s2", "st", "0", "clock"),
+            &png(64, 64, 3),
+        ),
+        204,
+        "",
+    );
+    // An absent header stays normal.
+    assert_response(
+        &request(
+            address,
+            "POST",
+            "/emote",
+            &session_headers("s3", "st", "0"),
+            &png(64, 64, 4),
+        ),
+        204,
+        "",
+    );
+    let snapshots = receiver.latest().snapshots();
+    assert_eq!(snapshots.len(), 4);
+    assert_eq!(snapshots[1].session_id.as_deref(), Some("s1"));
+    assert_eq!(snapshots[1].state, SessionState::Normal);
+    assert_eq!(snapshots[2].session_id.as_deref(), Some("s2"));
+    assert_eq!(snapshots[2].state, SessionState::Clock);
+    assert_eq!(snapshots[3].session_id.as_deref(), Some("s3"));
+    assert_eq!(snapshots[3].state, SessionState::Normal);
+    // Accepted metadata frames notify exactly like ordinary frames.
+    assert_eq!(count.load(Ordering::SeqCst), 4);
 }
 
 #[test]

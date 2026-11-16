@@ -2,7 +2,7 @@
 //!
 //! HTTP parsing belongs to Hyper, not this module. The small policy layer below
 //! validates the request before decoding, then publishes only a fully valid PNG.
-use crate::sessions::{Event, SessionRegistry, SessionSnapshot};
+use crate::sessions::{Event, SessionRegistry, SessionSnapshot, SessionState};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{
@@ -245,6 +245,15 @@ async fn handle(
         None
     };
     let close = path == "/emote/close";
+    // Optional sender presentation metadata: only the documented `clock`
+    // value selects the internal clock; everything else (including absent or
+    // unknown values) stays an ordinary image state. Other metadata headers
+    // remain accepted-and-ignored.
+    let state = if headers.get("x-emote-state").and_then(|v| v.to_str().ok()) == Some("clock") {
+        SessionState::Clock
+    } else {
+        SessionState::Normal
+    };
     let read = async {
         let mut body = request.into_body();
         let mut bytes = Vec::new();
@@ -277,7 +286,7 @@ async fn handle(
         let Some(frame) = decode(&bytes) else {
             return Ok(reply(S::UNPROCESSABLE_ENTITY, "expected a 64x64 PNG\n"));
         };
-        Event::Frame(Arc::new(frame))
+        Event::Frame(Arc::new(frame), state)
     };
     // Decode and await bodies without holding the publication mutex. Sequence,
     // closed-stream and capacity checks happen atomically here, after decoding.
@@ -286,10 +295,10 @@ async fn handle(
         if let Some((session, stream, sequence)) = identity {
             registry.apply(&session, &stream, sequence, event, Instant::now())
         } else {
-            let Event::Frame(frame) = event else {
+            let Event::Frame(frame, state) = event else {
                 unreachable!()
             };
-            registry.publish_legacy(frame);
+            registry.publish_legacy(frame, state);
             Ok(true)
         }
     };

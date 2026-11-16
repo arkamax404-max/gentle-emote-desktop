@@ -73,10 +73,14 @@ Both Content-Length and HTTP chunked bodies work. Each connection handles one
 request and closes; keepalive/pipelining are not supported. Content-Type is
 case-insensitive but must be exactly `image/png` without parameters. Exactly one
 Content-Type and one X-Emote-Version header are required. Version must be `1`.
-Additional state/frame/set/activity/stream metadata is accepted and ignored:
-visual labels are already in the pixels. Session lifecycle headers described below
-are interpreted only when a session ID is present (or on lifecycle endpoints).
-No metadata or payload is logged or persisted.
+Most additional state/frame/set/activity/stream metadata is accepted and ignored:
+visual labels are already in the pixels. The single exception is `X-Emote-State`:
+its documented value `clock` marks the sender's presentation as the idle clock,
+which the desktop renders internally (see below); every other value, including
+absent or unknown ones, stays an ordinary image state. The frame body is always
+validated and stored exactly like any other image. Session lifecycle headers
+described below are interpreted only when a session ID is present (or on
+lifecycle endpoints). No metadata or payload is logged or persisted.
 
 The PNG must be exactly 64x64. Standard grayscale, RGB, palette, and alpha PNGs
 are normalized to RGBA8; 16-bit samples are reduced to 8 bits. Alpha is preserved,
@@ -126,11 +130,13 @@ the same mutex as lifecycle changes. Rejected requests never consume sequence.
 Invalid bodies/PNGs still return errors even when their sequence would be stale.
 
 `receiver.latest().snapshots()` returns `Vec<SessionSnapshot>` in stable first-seen
-order. Each snapshot has `session_id: Option<String>`, `frame: Arc<Frame>` and
-`active: bool`. Active sessions appear together. If none remain, the final removed
+order. Each snapshot has `session_id: Option<String>`, `frame: Arc<Frame>`,
+`active: bool` and `state: SessionState` (the sender-declared presentation of the
+latest accepted frame: `Normal` or `Clock`). Active sessions appear together. If none remain, the final removed
 avatar stays visible with `active == false`; a reactivated or new session replaces
 that retained display. Legacy traffic has its own singleton key `None`, always
-active once populated, ordered before session keys. It coexists with session
+active once populated, ordered before session keys, and carries its own state
+metadata. It coexists with session
 avatars; it does not expire. Existing `latest().get()` consumers continue to see
 the last accepted frame (legacy or session-aware), never lifecycle metadata, and
 remain unchanged by close or timeout. The desktop uses `snapshots()` to render
@@ -139,6 +145,18 @@ neighboring avatars with independent textures; see the [architecture guide](arch
 Repaint callbacks run outside the mutex. Accepted frames and visible lifecycle
 changes notify; ordinary heartbeats and ignored requests do not. Snapshot pixel
 Arcs remain valid after replacement or shutdown.
+
+#### Sender-declared clock state
+
+A session (or the legacy singleton) whose latest accepted frame carries
+`X-Emote-State: clock` keeps its tile, order, lease and stream guards, but the
+desktop paints its own internally generated 64x64 Lemmings pixel clock there
+instead of the stored pixels: local date and 24h time glyphs plus a walking
+Lemmings animation that advances every 500ms while time glyphs remain
+second-stable. Any ordinary image state exits the clock for that session only.
+The final-close fallback clock (below) renders the same artwork full-surface
+without a decorative frame. Senders need no new endpoint or body change; unknown
+state values keep working as ordinary images.
 
 #### Bounded replay protection
 
