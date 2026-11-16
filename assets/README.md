@@ -35,8 +35,12 @@ the clear rectangle, then paint the frame above it. Transparent mode uses no
 frame and preserves its earlier image geometry. A single avatar stays borderless.
 No sender PNG, protocol, destination or preference is changed.
 
-At a 128-point tile the avatar image is approximately 92 points wide, rather
-than the approximately 111 points available with the former four-point margin.
+Each slider step sizes the window so the frame's clear opening contains the
+avatar's whole composition (image plus its one source separation row) at the
+chosen multiplier plus three logical points of snapping slack; the whole-pixel
+snapped fit then renders the avatar at the chosen step's physical level (below
+one physical pixel per source texel the fractional contain fit applies).
 The user visually accepted the rendered frames and compact menu in a native
-screenshot with two avatars. Layout at all four logical sizes is tested; that
+screenshot with two avatars. Layout at all five avatar-size slider steps is
+tested; that
 screenshot alone does not establish every platform, DPI or focus behavior.

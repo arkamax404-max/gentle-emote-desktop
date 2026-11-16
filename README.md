@@ -34,7 +34,7 @@ Exact OS error codes and text are host-specific.
 | --- | --- |
 | Start with no sender | Readable waiting message and control hints |
 | Primary-button drag | Ask the OS to move the window |
-| Right-click anywhere | Open a separate options window: per-avatar size 128, 192 (initial), 256, or 384 logical pixels |
+| Right-click anywhere | Open a separate options window: avatar-size slider with five steps x1–x5 (the avatar's 64-point image renders at that many points per source texel, x3 initial) |
 | Right-click → Transparent background | Enable the slider, initially at 45% transparency (opacity 55); uncheck to reset to opaque (0%) and disable the slider |
 | Right-click → Background transparency | While checked, adjust background-only transparency: 0% opaque, 100% invisible; for this session only |
 | Right-click → No frame | Hide decorative frames and leave transparent 5 px separators; preserve the remaining background; unchecked by default, for this session only |
@@ -48,14 +48,26 @@ moving focus away after it has gained focus dismisses it. Exit closes the main
 avatar window and its receiver, not just the options. Native popup positioning
 and focus behavior depend on the window manager/compositor.
 
-Each avatar occupies a square tile. **Horizontal** uses a row with width
-`avatar count × chosen size` and height `chosen size`; **Vertical** uses a column
-with width `chosen size` and height `avatar count × chosen size`. With one or more avatars,
-an opaque background and **No frame** unchecked, each tile uses the supplied [cyberpunk PNG frame](assets/README.md)
-instead of a beveled border. The complete avatar and labels fit within its clear
-opening; one embedded texture is reused across tiles with nearest-neighbor sampling.
-At 128 points the avatar image is approximately 92 points wide, so the artwork
-has more space than the old thin border. Transparent mode draws no frame and
+The canvas derives from the avatar's rendered image, never the reverse: the
+slider step **x1–x5** is the points per source texel of the 64-point image
+(x3 = 192, the initial step), the composition adds the image's one source
+separation row (so the composition is 64×step wide and 65×step tall), and the
+window adds only the margins that composition and the visible decorations
+actually need. **Horizontal** rows stack `avatar count` tiles; **Vertical**
+columns stack them along the other axis. With one or more avatars, an opaque
+background and **No frame** unchecked, each tile is wrapped in the PNG
+[cyberpunk frame](assets/README.md): its clear opening (851 of the 1100
+artwork columns) contains the whole composition plus three logical points of
+snapping slack, so the framed tile is `(1100, 1092) × (65×step + 3) / 851` and
+the avatar still renders at the whole chosen multiplier. Checking **No frame**
+(or any nonzero transparency) reclaims the frame margins and shrinks each tile
+to exactly the composition. Unframed multi-avatar cards budget their real
+four-point insets and five-point gaps around the composition instead of
+deducting them from the image. At 100% display scale the avatar draws exactly
+`64×step` square pixels in every mode; at fractional scale factors the
+existing whole-physical-pixel policy applies (at least the chosen step's
+physical level, never one less). One embedded texture is
+reused across tiles with nearest-neighbor sampling. Transparent mode draws no frame and
 automatically uses the compact unframed layout instead of retaining extra tile spacing.
 Checking **No frame** reclaims the unframed image fit while keeping an opaque
 background opaque. The available surface is divided into equal cards with
@@ -66,15 +78,18 @@ separator strips are **always transparent**, even with an opaque background
 behind the avatars. Cards use **8 logical pixel rounded corners**, including
 the edges next to separators. The background and image draw mesh share that
 outline, so opaque PNG corners cannot cover it. Cached PNG pixels and label
-layout are unchanged. Window dimensions stay unchanged. A framed single avatar
+layout are unchanged. Window dimensions follow the framing choice: framed tiles
+add the frame margins around the composition, unframed tiles shrink to the
+composition. A framed single avatar
 uses the same clear-opening inset as a framed multi-avatar tile; **No frame**
-retains its original borderless fit. Nonzero transparency hides frames, independently of that
+retains its borderless fit. Nonzero transparency hides frames, independently of that
 checkbox; changing transparency does not reset the **No frame** selection.
 The checkboxes, background transparency and stacking selection reset on restart.
 A single avatar now shows its frame by default, at 0% transparency with **No frame**
-unchecked. The waiting surface has no decorative frame before an image arrives.
-Startup waits in one
-192-pixel square. Physical dimensions also follow the OS display scale. Many
+unchecked. The waiting surface has no decorative frame before an image arrives and keeps
+its native 192×192 initial square at every slider step; only actual avatars or
+the clock fallback derive computed content sizes (the clock draws the
+composition of the chosen step). Physical dimensions also follow the OS display scale. Many
 sessions can exceed the monitor's width or height; scrolling, wrapping, and other
 overflow policies are outside this change. The desktop adds one source row of
 black top padding above the complete image. The complete 64×64 image is

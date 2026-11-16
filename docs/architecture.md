@@ -169,18 +169,28 @@ multiplied by alpha, so egui performs the blending conversion correctly. Passing
 these bytes as premultiplied data would misinterpret partially transparent colors.
 
 `TextureOptions::NEAREST` prevents interpolation between adjacent pixel-art
-texels. Menu sizes (128, 192, 256, 384 logical pixels) are integer multiples of
-64; physical dimensions also depend on the display's scale factor.
+texels. The avatar-size slider offers five steps x1–x5: the step is the points
+per source texel of the 64-point image (64–320 point images, x3 = 192
+initially); physical dimensions also depend on the display's scale factor.
 
 `native_options` requests a transparency-capable, fixed, frameless, always-on-top
 initial square with Glow rendering. It grows into a row of square avatar tiles
 by default. **Vertical / Horizontal** selects either a column or a row using
 exclusive radio controls; the private orientation flag starts horizontal and
-resets on restart. The size menu chooses each tile's side length. Native size is
-`count × tile size` by `tile size` horizontally, or `tile size` by
-`count × tile size` vertically (one tile while waiting). Resize commands are
-sent only when count, chosen size or orientation changes, not on image updates
-or heartbeats.
+resets on restart. The size slider chooses the avatar's rendered image size,
+and the canvas derives from that image instead of a pre-chosen square: the
+composition is the image plus its one source separation row (64×step by
+65×step points). A framed tile wraps the composition in the decorative frame,
+sized so the frame's clear opening (851 of the 1100 artwork columns) contains
+the whole composition plus three logical points of snapping slack — absorbing
+the inward whole-physical-pixel fit and egui's 1/32-point viewport rounding —
+so the framed image keeps the whole chosen multiplier. An unframed single tile
+stays exactly at the composition; unframed multi-avatar cards budget their
+four-point insets and five-point gaps around it. Native size stacks those
+tiles along the selected axis; the waiting surface keeps the native 192×192
+square at every step, while the clock fallback uses the composition. Resize commands are
+sent only when count, chosen step, orientation or framing changes, not on image
+updates or heartbeats.
 The options use `show_viewport_immediate` with a stable child viewport ID and an
 independent surface fitted to its controls with eight logical pixels of outer
 padding, rather than a fixed oversized rectangle. Rendering is synchronous on the UI

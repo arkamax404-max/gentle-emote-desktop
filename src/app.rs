@@ -200,7 +200,11 @@ pub struct EmoteApp {
     frame_texture: Option<TextureHandle>,
     clock_texture: Option<TextureHandle>,
     clock_step: Option<i64>,
-    tile_size: f32,
+    /// Avatar-size slider step x1..x5: the avatar's 64-point image renders at
+    /// that many points per source texel, and the canvas derives from that
+    /// composition (image plus its one separation row) plus the visible
+    /// decorations — never from a pre-chosen square that loses a level.
+    size_step: u8,
     applied_size: Vec2,
     background_opacity: u8,
     transparent_background: bool,
@@ -222,7 +226,7 @@ impl EmoteApp {
             frame_texture: None,
             clock_texture: None,
             clock_step: None,
-            tile_size: 192.0,
+            size_step: 3,
             applied_size: Vec2::splat(192.0),
             background_opacity: 100,
             transparent_background: false,
@@ -326,7 +330,8 @@ impl EmoteApp {
         let unframed = self.no_frame || self.background_opacity < 100;
         // The waiting surface has no artwork; every actual opaque avatar may
         // use the same frame, including the single-avatar case.
-        let frame = if !show_clock && !snapshots.is_empty() && !unframed {
+        let framed = !show_clock && !snapshots.is_empty() && !unframed;
+        let frame = if framed {
             Some(
                 self.frame_texture
                     .get_or_insert_with(|| load_avatar_frame(ui.ctx())),
@@ -388,7 +393,6 @@ impl EmoteApp {
             } else {
                 &self.textures[&snapshot.session_id].texture
             };
-
             // Divide the full surface into neighboring tiles, preserving the single
             // avatar's fit even while the OS is processing a resize request.
             let (offset, size) = if vertical {
@@ -537,14 +541,19 @@ impl EmoteApp {
                     .rect_filled(ui.max_rect(), 0.0, ui.visuals().window_fill());
                 let mut content_width = 0.0_f32;
                 let content = egui::Frame::new().inner_margin(8).show(ui, |ui| {
-                    for size in [128, 192, 256, 384] {
-                        let option = ui.button(format!("{size} × {size}"));
-                        content_width = content_width.max(option.rect.width());
-                        if option.clicked() {
-                            self.tile_size = size as f32;
-                            self.menu_open = false;
-                        }
-                    }
+                    let size_caption = ui.label("Avatar size");
+                    content_width = content_width.max(size_caption.rect.width());
+                    // Five whole-integer steps over 64-point content sides;
+                    // the value stays live like the transparency slider. The
+                    // row width must include the value text, not just the rail.
+                    let slider_row = ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Slider::new(&mut self.size_step, 1..=5)
+                                .custom_formatter(|value, _| format!("x{}", value as u8)),
+                        );
+                        ui.min_rect().width()
+                    });
+                    content_width = content_width.max(slider_row.inner);
                     ui.separator();
                     let transparency =
                         ui.checkbox(&mut self.transparent_background, "Transparent background");
@@ -552,7 +561,8 @@ impl EmoteApp {
                     if transparency.changed() {
                         // Default to 45% displayed transparency (opacity 55)
                         // instead of full invisibility.
-                        self.background_opacity = if self.transparent_background { 55 } else { 100 };
+                        self.background_opacity =
+                            if self.transparent_background { 55 } else { 100 };
                         self.menu_open = false;
                     }
                     let label = ui.label("Background transparency");
@@ -617,11 +627,43 @@ impl EmoteApp {
             }
         }
         // Resize only for a changed count/selection, not every repaint or heartbeat.
-        // The waiting surface occupies one tile before any frame arrives.
-        let size = if self.vertical_stacking {
-            Vec2::new(self.tile_size, count as f32 * self.tile_size)
+        // The canvas derives from the chosen image size, never the reverse: the
+        // avatar renders its 64-point image at `step` points per source texel
+        // (one whole physical pixel per texel per step at 100% DPI), the
+        // composition adds its one source separation row, and the canvas adds
+        // only the margins that composition, the packed-card insets and gaps,
+        // and the visible frame actually need. Deriving the canvas from a
+        // square 64×step instead made the inward-snapped fit lose a whole step
+        // from x2 upward (x5 drew 256 instead of 320 points).
+        let step = f32::from(self.size_step);
+        let composition = Vec2::new(64.0 * step, 65.0 * step);
+        let tile = if framed {
+            // The frame's square clear opening (851 of the 1100 artwork
+            // columns) must contain the whole composition; three logical
+            // points of slack absorb the inward whole-physical-pixel snapping
+            // (up to two physical pixels) and egui's 1/32-point viewport
+            // rounding, so the framed image never loses a level either.
+            let scale = (composition.y + 3.0) / 851.0;
+            Vec2::new(1100.0 * scale, 1092.0 * scale)
         } else {
-            Vec2::new(count as f32 * self.tile_size, self.tile_size)
+            composition
+        };
+        let size = if snapshots.is_empty() && !show_clock {
+            // The waiting surface keeps the native 192×192 initial square.
+            Vec2::splat(192.0)
+        } else if unframed && count > 1 {
+            // Packed cards budget their real four-point insets and five-point
+            // gaps instead of deducting them from the image.
+            let card = tile + Vec2::splat(8.0);
+            if vertical {
+                Vec2::new(card.x, count as f32 * card.y + (count - 1) as f32 * 5.0)
+            } else {
+                Vec2::new(count as f32 * card.x + (count - 1) as f32 * 5.0, card.y)
+            }
+        } else if vertical {
+            Vec2::new(tile.x, count as f32 * tile.y)
+        } else {
+            Vec2::new(count as f32 * tile.x, tile.y)
         };
         if size != self.applied_size {
             ui.ctx().send_viewport_cmd(ViewportCommand::InnerSize(size));
@@ -750,8 +792,10 @@ mod tests {
         assert!(
             output.viewport_output[&egui::ViewportId::ROOT]
                 .commands
-                .is_empty(),
-            "toggling transparency must not move, resize, or close the window"
+                .iter()
+                .all(|command| matches!(command, ViewportCommand::InnerSize(_))),
+            "toggling transparency must not move or close the window; only the \
+             deliberate framed/unframed content resize may appear"
         );
     }
 

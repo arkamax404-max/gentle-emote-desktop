@@ -924,9 +924,14 @@ fn stacking_selector_switches_axes_and_preserves_frames_and_transparent_gaps() {
     assert!(avatars(&horizontal)[0].1.right() < avatars(&horizontal)[1].1.left());
     drop(horizontal);
     let selection = select_menu_option(&ctx, &mut app, "Vertical");
+    let frame_scale = (65.0 * 3.0 + 3.0) / 851.0;
+    let framed_tile = Vec2::new(1100.0 * frame_scale, 1092.0 * frame_scale);
     assert_eq!(
         selection.viewport_output[&egui::ViewportId::ROOT].commands,
-        vec![ViewportCommand::InnerSize(Vec2::new(192.0, 384.0))]
+        vec![ViewportCommand::InnerSize(Vec2::new(
+            framed_tile.x,
+            2.0 * framed_tile.y
+        ))]
     );
     drop(selection);
     let render = |app: &mut EmoteApp, count: usize, size: f32| {
@@ -1008,7 +1013,10 @@ fn stacking_selector_switches_axes_and_preserves_frames_and_transparent_gaps() {
     let selection = select_menu_option(&ctx, &mut app, "Horizontal");
     assert_eq!(
         selection.viewport_output[&egui::ViewportId::ROOT].commands,
-        vec![ViewportCommand::InnerSize(Vec2::new(384.0, 192.0))]
+        vec![ViewportCommand::InnerSize(Vec2::new(
+            2.0 * framed_tile.x,
+            framed_tile.y
+        ))]
     );
     drop(selection);
     session_request(address, "b", 2, "emote/close", 0);
@@ -1312,6 +1320,229 @@ fn no_frame_toggle_is_independent_of_transparency_and_preserves_avatar_pixels() 
 }
 
 #[test]
+fn size_slider_steps_render_the_chosen_image_and_derive_the_canvas_from_it() {
+    let (ctx, mut app, address) = setup();
+    session_request(address, "a", 1, "emote", 42);
+    step(&ctx, &mut app, vec![]);
+    for step_index in 1..=5_u8 {
+        let step_scale = f32::from(step_index);
+        let side = 64.0 * step_scale;
+        // The composition is the 64×step image plus its one source row above;
+        // the canvas derives from it, never from a square that loses a level.
+        let composition = Vec2::new(side, 65.0 * step_scale);
+        let frame_scale = (composition.y + 3.0) / 851.0;
+        let framed_tile = Vec2::new(1100.0 * frame_scale, 1092.0 * frame_scale);
+        let commands = set_size_step(&ctx, &mut app, step_index);
+        assert_eq!(
+            commands,
+            vec![ViewportCommand::InnerSize(framed_tile)],
+            "the framed canvas adds only the frame margins around the whole \
+             x{step_index} composition"
+        );
+        let framed = surface_step(&ctx, &mut app, framed_tile);
+        let borders = frames(&framed);
+        assert_eq!(borders.len(), 1);
+        // egui rounds the rendered viewport surface to its 1/32-point UI grid,
+        // so the artwork fills the rendered surface, not the requested size.
+        assert!(
+            (borders[0].1.width() - framed_tile.x).abs() < 1.0 / 32.0 + 0.001,
+            "the frame artwork must fill the framed tile: width={:.6} vs {:.6}",
+            borders[0].1.width(),
+            framed_tile.x
+        );
+        let framed_image = avatars(&framed)[0].1;
+        assert!(borders[0].1.contains_rect(framed_image));
+        // The chosen step is the actual rendered image size: at 100% DPI the
+        // avatar draws exactly side×side, framed or not.
+        assert_eq!(
+            framed_image.width(),
+            side,
+            "x{step_index} framed image must render at the whole chosen multiplier"
+        );
+        assert_eq!(
+            framed_image.height(),
+            side,
+            "x{step_index} framed image must render at the whole chosen multiplier"
+        );
+        assert!(framed.textures_delta.set.is_empty());
+        drop(framed);
+
+        let toggled = toggle_no_frame_collecting_commands(&ctx, &mut app);
+        assert_eq!(
+            toggled,
+            vec![ViewportCommand::InnerSize(composition)],
+            "disabling the frame reclaims its margins down to the whole composition"
+        );
+        let unframed = surface_step(&ctx, &mut app, composition);
+        assert!(frames(&unframed).is_empty());
+        let unframed_image = avatars(&unframed)[0].1;
+        assert_eq!(
+            unframed_image.width(),
+            side,
+            "x{step_index} unframed image must render at the whole chosen multiplier"
+        );
+        assert_eq!(
+            unframed_image.height(),
+            side,
+            "x{step_index} unframed image must render at the whole chosen multiplier"
+        );
+        assert!(unframed.textures_delta.set.is_empty());
+        assert!(
+            unframed.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .is_empty(),
+            "resize commands stay deduplicated"
+        );
+        drop(unframed);
+        select_menu_option(&ctx, &mut app, "No frame");
+    }
+}
+
+#[test]
+fn size_slider_canvas_covers_multiple_avatars_orientations_and_scale_factors() {
+    let (ctx, mut app, address) = setup();
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "b", 1, "emote", 84);
+    step(&ctx, &mut app, vec![]);
+    let step_scale = 4.0_f32;
+    let composition = Vec2::new(64.0 * step_scale, 65.0 * step_scale);
+    let frame_scale = (composition.y + 3.0) / 851.0;
+    let framed_tile = Vec2::new(1100.0 * frame_scale, 1092.0 * frame_scale);
+    let card = composition + Vec2::splat(8.0);
+
+    // Framed pair, horizontal: every tile derives from the composition.
+    let commands = set_size_step(&ctx, &mut app, 4);
+    assert_eq!(
+        commands,
+        vec![ViewportCommand::InnerSize(Vec2::new(
+            2.0 * framed_tile.x,
+            framed_tile.y
+        ))],
+        "framed multi-avatar rows stack whole framed tiles"
+    );
+    let horizontal = surface_step(
+        &ctx,
+        &mut app,
+        Vec2::new(2.0 * framed_tile.x, framed_tile.y),
+    );
+    let images = avatars(&horizontal);
+    assert_eq!(images.len(), 2);
+    assert_eq!(frames(&horizontal).len(), 2);
+    assert!(images[0].1.right() < images[1].1.left());
+    for (index, (_, image)) in images.iter().enumerate() {
+        assert_eq!(
+            image.width(),
+            256.0,
+            "framed horizontal avatar {index} must render at x4"
+        );
+        assert_eq!(image.height(), 256.0, "framed horizontal avatar {index}");
+    }
+    drop(horizontal);
+
+    let selection = select_menu_option(&ctx, &mut app, "Vertical");
+    assert_eq!(
+        selection.viewport_output[&egui::ViewportId::ROOT].commands,
+        vec![ViewportCommand::InnerSize(Vec2::new(
+            framed_tile.x,
+            2.0 * framed_tile.y
+        ))],
+        "vertical stacking stacks the same framed tiles"
+    );
+    let vertical = surface_step(
+        &ctx,
+        &mut app,
+        Vec2::new(framed_tile.x, 2.0 * framed_tile.y),
+    );
+    let images = avatars(&vertical);
+    assert_eq!(images.len(), 2);
+    assert!(images[0].1.bottom() < images[1].1.top());
+    for (index, (_, image)) in images.iter().enumerate() {
+        assert_eq!(image.width(), 256.0, "framed vertical avatar {index}");
+        assert_eq!(image.height(), 256.0, "framed vertical avatar {index}");
+    }
+    drop(vertical);
+
+    // Unframed multi cards budget their real four-point insets and five-point
+    // gaps instead of deducting them from the image.
+    let toggled = toggle_no_frame_collecting_commands(&ctx, &mut app);
+    assert_eq!(
+        toggled,
+        vec![ViewportCommand::InnerSize(Vec2::new(
+            card.x,
+            2.0 * card.y + 5.0
+        ))],
+        "the unframed vertical canvas budgets insets and gaps around the composition"
+    );
+    let unframed_vertical = surface_step(&ctx, &mut app, Vec2::new(card.x, 2.0 * card.y + 5.0));
+    let images = avatars(&unframed_vertical);
+    assert_eq!(images.len(), 2);
+    assert!(frames(&unframed_vertical).is_empty());
+    for (index, (_, image)) in images.iter().enumerate() {
+        assert_eq!(image.width(), 256.0, "unframed vertical avatar {index}");
+        assert_eq!(image.height(), 256.0, "unframed vertical avatar {index}");
+    }
+    drop(unframed_vertical);
+    let selection = select_menu_option(&ctx, &mut app, "Horizontal");
+    assert_eq!(
+        selection.viewport_output[&egui::ViewportId::ROOT].commands,
+        vec![ViewportCommand::InnerSize(Vec2::new(
+            2.0 * card.x + 5.0,
+            card.y
+        ))],
+        "the unframed horizontal canvas budgets insets and gaps around the composition"
+    );
+    let unframed_horizontal = surface_step(&ctx, &mut app, Vec2::new(2.0 * card.x + 5.0, card.y));
+    let images = avatars(&unframed_horizontal);
+    assert_eq!(images.len(), 2);
+    assert!(images[0].1.right() < images[1].1.left());
+    for (index, (_, image)) in images.iter().enumerate() {
+        assert_eq!(image.width(), 256.0, "unframed horizontal avatar {index}");
+        assert_eq!(image.height(), 256.0, "unframed horizontal avatar {index}");
+    }
+    drop(unframed_horizontal);
+
+    // Back to one framed avatar: at fractional DPI the whole physical pixel
+    // policy must keep at least the chosen step, never lose a level to
+    // clipping or rounding.
+    session_request(address, "b", 2, "emote/close", 0);
+    step(&ctx, &mut app, vec![]);
+    select_menu_option(&ctx, &mut app, "No frame");
+    let mut unframed = false;
+    for framed_case in [false, true] {
+        ctx.set_pixels_per_point(1.0);
+        step(&ctx, &mut app, vec![]);
+        if unframed == framed_case {
+            toggle_option(&ctx, &mut app, "No frame");
+        }
+        unframed = !framed_case;
+        for ppp in [1.25_f32, 1.5, 2.0] {
+            ctx.set_pixels_per_point(ppp);
+            // Absorb egui's zoom-transition pass, which rescales the previous
+            // surface instead of honoring the new raw screen rect once.
+            step(&ctx, &mut app, vec![]);
+            let surface = if framed_case {
+                framed_tile
+            } else {
+                composition
+            };
+            let output = surface_step(&ctx, &mut app, surface);
+            let image = avatars(&output)[0].1;
+            let context = format!("framed={framed_case} ppp={ppp}");
+            assert_whole_physical_pixels(image, ppp, &context);
+            let expected_physical = 64.0 * (step_scale * ppp).floor();
+            assert!(
+                (image.width() * ppp - expected_physical).abs() < 1e-3
+                    && (image.height() * ppp - expected_physical).abs() < 1e-3,
+                "{context}: the chosen step must not lose a whole physical \
+                 level: rendered {}×{} physical pixels, expected {expected_physical}",
+                image.width() * ppp,
+                image.height() * ppp
+            );
+        }
+    }
+}
+
+#[test]
 fn small_surface_menu_has_independent_viewport_and_complete_controls() {
     for size in [126.0, 128.0] {
         let (ctx, mut app, _) = setup();
@@ -1352,10 +1583,8 @@ fn small_surface_menu_has_independent_viewport_and_complete_controls() {
         let child = menu::take();
         let mut text_bounds = egui::Rect::NOTHING;
         for label in [
-            "128 × 128",
-            "192 × 192",
-            "256 × 256",
-            "384 × 384",
+            "Avatar size",
+            "x3",
             "Transparent background",
             "Background transparency",
             "No frame",
@@ -1490,6 +1719,8 @@ fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
     session_request(address, "a", 1, "emote", 42);
     session_request(address, "b", 1, "emote", 84);
     let first = wide_step(&ctx, &mut app, 384.0);
+    let frame_scale = (65.0 * 3.0 + 3.0) / 851.0;
+    let framed_tile = Vec2::new(1100.0 * frame_scale, 1092.0 * frame_scale);
     let tiles = avatars(&first);
     assert_eq!(tiles.len(), 2);
     assert!(tiles[0].1.right() < tiles[1].1.left());
@@ -1511,7 +1742,10 @@ fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
     assert!(
         first.viewport_output[&egui::ViewportId::ROOT]
             .commands
-            .contains(&ViewportCommand::InnerSize(Vec2::new(384.0, 192.0)))
+            .contains(&ViewportCommand::InnerSize(Vec2::new(
+                2.0 * framed_tile.x,
+                framed_tile.y
+            )))
     );
     assert_eq!(
         first
@@ -1574,7 +1808,7 @@ fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
     assert!(
         closed.viewport_output[&egui::ViewportId::ROOT]
             .commands
-            .contains(&ViewportCommand::InnerSize(Vec2::splat(192.0)))
+            .contains(&ViewportCommand::InnerSize(framed_tile))
     );
     drop(closed);
 
@@ -1582,12 +1816,24 @@ fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
     let retained = step(&ctx, &mut app, vec![]);
     assert!(avatars(&retained).is_empty());
     assert!(frames(&retained).is_empty());
-    assert_eq!(clock_meshes(&retained).len(), 1);
+    let clocks = clock_meshes(&retained);
+    assert_eq!(
+        clocks.len(),
+        1,
+        "the final explicit close paints the internal pixel clock"
+    );
     assert!(retained.textures_delta.free.is_empty());
-    assert!(
-        retained.viewport_output[&egui::ViewportId::ROOT]
-            .commands
-            .is_empty()
+    assert_eq!(
+        clock_uploads(&retained).len(),
+        1,
+        "the shared internal clock texture uploads once"
+    );
+    // The clock fallback has no frame, so it reclaims the unframed
+    // composition — the image plus its one source separation row — even though
+    // the framed tile was applied before the final close.
+    assert_eq!(
+        retained.viewport_output[&egui::ViewportId::ROOT].commands,
+        vec![ViewportCommand::InnerSize(Vec2::new(192.0, 195.0))]
     );
     drop(retained);
 
@@ -1596,10 +1842,9 @@ fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
     assert_eq!(avatars(&replaced).len(), 1);
     assert_ne!(avatars(&replaced)[0].0, tiles[1].0);
     assert!(replaced.textures_delta.free.contains(&tiles[1].0));
-    assert!(
-        replaced.viewport_output[&egui::ViewportId::ROOT]
-            .commands
-            .is_empty()
+    assert_eq!(
+        replaced.viewport_output[&egui::ViewportId::ROOT].commands,
+        vec![ViewportCommand::InnerSize(framed_tile)]
     );
 }
 
@@ -1754,7 +1999,7 @@ fn per_session_clock_tiles_run_alongside_normal_avatars_without_hiding_them() {
 }
 
 #[test]
-fn size_menu_applies_to_each_avatar_and_count_changes_keep_chosen_size() {
+fn size_slider_applies_to_each_avatar_and_count_changes_keep_chosen_size() {
     let (ctx, mut app, address) = setup();
     session_request(address, "a", 1, "emote", 42);
     session_request(address, "b", 1, "emote", 84);
@@ -1778,40 +2023,31 @@ fn size_menu_applies_to_each_avatar_and_count_changes_keep_chosen_size() {
     );
     run(&mut app, vec![button(p, PointerButton::Secondary, false)]);
     run(&mut app, vec![]);
-    let menu = menu::take();
-    let p = menu
-        .shapes
-        .iter()
-        .find_map(|s| match &s.shape {
-            egui::Shape::Text(t) if t.galley.text().starts_with("256") => {
-                Some(t.pos + Vec2::splat(4.0))
-            }
-            _ => None,
-        })
-        .unwrap();
-    drop(menu);
+    let point = menu::slider_position("Avatar size", 0.75);
     menu::events(vec![
-        Event::PointerMoved(p),
-        button(p, PointerButton::Primary, true),
+        Event::PointerMoved(point),
+        button(point, PointerButton::Primary, true),
     ]);
-    run(&mut app, vec![]);
-    menu::events(vec![button(p, PointerButton::Primary, false)]);
-    let chosen = run(&mut app, vec![]);
+    let pressed = run(&mut app, vec![]);
+    menu::events(vec![button(point, PointerButton::Primary, false)]);
+    let released = run(&mut app, vec![]);
+    let frame_scale = (65.0 * 4.0 + 3.0) / 851.0;
+    let tile = Vec2::new(1100.0 * frame_scale, 1092.0 * frame_scale);
     assert_eq!(
-        chosen.viewport_output[&egui::ViewportId::ROOT].commands,
-        vec![ViewportCommand::InnerSize(Vec2::new(512.0, 256.0))]
+        pressed.viewport_output[&egui::ViewportId::ROOT].commands,
+        vec![ViewportCommand::InnerSize(Vec2::new(2.0 * tile.x, tile.y))]
     );
-    drop(chosen);
     assert!(
-        run(&mut app, vec![]).viewport_output[&egui::ViewportId::ROOT]
+        released.viewport_output[&egui::ViewportId::ROOT]
             .commands
-            .is_empty()
+            .is_empty(),
+        "resizing is deduplicated once the size is applied"
     );
     session_request(address, "a", 2, "emote/close", 0);
     let closed = run(&mut app, vec![]);
     assert_eq!(
         closed.viewport_output[&egui::ViewportId::ROOT].commands,
-        vec![ViewportCommand::InnerSize(Vec2::splat(256.0))]
+        vec![ViewportCommand::InnerSize(tile)]
     );
 }
 
@@ -1858,20 +2094,64 @@ fn waiting_text_and_secondary_menu_do_not_start_drag() {
             .contains(&ViewportCommand::StartDrag)
     );
     let text = format!("{:?}", menu::take().shapes);
-    for label in ["128", "192", "256", "384", "Transparent background", "Exit"] {
+    for label in ["Avatar size", "x3", "Transparent background", "Exit"] {
         assert!(text.contains(label), "missing {label}: {text}");
     }
 }
 
 #[test]
 fn menu_actions_resize_square_or_close_without_dragging() {
-    for (label, command) in [
-        ("128", ViewportCommand::InnerSize(Vec2::splat(128.0))),
-        ("192", ViewportCommand::InnerSize(Vec2::splat(192.0))),
-        ("256", ViewportCommand::InnerSize(Vec2::splat(256.0))),
-        ("384", ViewportCommand::InnerSize(Vec2::splat(384.0))),
-        ("Exit", ViewportCommand::Close),
-    ] {
+    for step_index in 1..=5_u8 {
+        let (ctx, mut app, _) = setup();
+        step(&ctx, &mut app, vec![]);
+        let p = Pos2::new(20.0, 20.0);
+        step(
+            &ctx,
+            &mut app,
+            vec![
+                Event::PointerMoved(p),
+                button(p, PointerButton::Secondary, true),
+            ],
+        );
+        step(
+            &ctx,
+            &mut app,
+            vec![button(p, PointerButton::Secondary, false)],
+        );
+        step(&ctx, &mut app, vec![]);
+        let point = menu::slider_position("Avatar size", f32::from(step_index - 1) / 4.0);
+        menu::events(vec![
+            Event::PointerMoved(point),
+            button(point, PointerButton::Primary, true),
+        ]);
+        let pressed = step(&ctx, &mut app, vec![]);
+        menu::events(vec![button(point, PointerButton::Primary, false)]);
+        let released = step(&ctx, &mut app, vec![]);
+        let settled = step(&ctx, &mut app, vec![]);
+        let mut commands = pressed.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .clone();
+        commands.extend(
+            released.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .cloned(),
+        );
+        commands.extend(
+            settled.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .iter()
+                .cloned(),
+        );
+        // The waiting surface keeps its native 192×192 square at every step;
+        // only actual avatars or the clock derive computed content sizes.
+        assert!(
+            commands.is_empty(),
+            "waiting surface must not resize while choosing a step: {commands:?}"
+        );
+        assert!(!commands.contains(&ViewportCommand::StartDrag));
+    }
+    {
         let (ctx, mut app, _) = setup();
         step(&ctx, &mut app, vec![]);
         let p = Pos2::new(20.0, 20.0);
@@ -1895,7 +2175,7 @@ fn menu_actions_resize_square_or_close_without_dragging() {
             .iter()
             .find_map(|shape| {
                 if let egui::Shape::Text(text) = &shape.shape
-                    && text.galley.text().starts_with(label)
+                    && text.galley.text() == "Exit"
                 {
                     return Some(text.pos + Vec2::splat(4.0));
                 }
@@ -1918,11 +2198,7 @@ fn menu_actions_resize_square_or_close_without_dragging() {
                 .commands
                 .clone(),
         );
-        if label == "192" {
-            assert!(commands.is_empty(), "unchanged size: {commands:?}");
-        } else {
-            assert!(commands.contains(&command), "{label}: {commands:?}");
-        }
+        assert!(commands.contains(&ViewportCommand::Close));
         assert!(!commands.contains(&ViewportCommand::StartDrag));
     }
 }
@@ -1933,11 +2209,13 @@ fn toggle_background(ctx: &egui::Context, app: &mut EmoteApp) {
 
 fn toggle_option(ctx: &egui::Context, app: &mut EmoteApp, label: &str) {
     let output = select_menu_option(ctx, app, label);
+    let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
     assert!(
-        output.viewport_output[&egui::ViewportId::ROOT]
-            .commands
-            .is_empty(),
-        "toggle must not move, resize, or close the window"
+        commands
+            .iter()
+            .all(|command| matches!(command, ViewportCommand::InnerSize(_))),
+        "toggle must not move or close the window, but the deliberate \
+         framed/unframed content resize may appear: {commands:?}"
     );
 }
 
@@ -1975,7 +2253,59 @@ fn select_menu_option(ctx: &egui::Context, app: &mut EmoteApp, label: &str) -> O
     ]);
     step(ctx, app, vec![]);
     menu::events(vec![button(p, PointerButton::Primary, false)]);
+    // The immediate child renders after its root pass closure, so a click's
+    // state change reaches the root's resize block one settle pass later;
+    // return that pass so callers observe the click's window commands.
+    step(ctx, app, vec![]);
     step(ctx, app, vec![])
+}
+
+/// Choose one of the five avatar-size steps (x1..x5) through the public menu
+/// slider and return every root viewport command emitted while doing so.
+fn set_size_step(ctx: &egui::Context, app: &mut EmoteApp, step_index: u8) -> Vec<ViewportCommand> {
+    step(ctx, app, vec![]);
+    let p = Pos2::new(20.0, 20.0);
+    step(
+        ctx,
+        app,
+        vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Secondary, true),
+        ],
+    );
+    step(ctx, app, vec![button(p, PointerButton::Secondary, false)]);
+    step(ctx, app, vec![]);
+    let point = menu::slider_position("Avatar size", f32::from(step_index - 1) / 4.0);
+    menu::events(vec![
+        Event::PointerMoved(point),
+        button(point, PointerButton::Primary, true),
+    ]);
+    let pressed = step(ctx, app, vec![]);
+    menu::events(vec![button(point, PointerButton::Primary, false)]);
+    let released = step(ctx, app, vec![]);
+    let settled = step(ctx, app, vec![]);
+    let child = menu::take();
+    assert!(
+        child.shapes.iter().any(|shape| matches!(&shape.shape,
+            egui::Shape::Text(text) if text.galley.text() == format!("x{step_index}"))),
+        "size slider must display the chosen step x{step_index}"
+    );
+    let mut commands = pressed.viewport_output[&egui::ViewportId::ROOT]
+        .commands
+        .clone();
+    commands.extend(
+        released.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .cloned(),
+    );
+    commands.extend(
+        settled.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .cloned(),
+    );
+    commands
 }
 
 fn has_black_background(output: &Output) -> bool {
@@ -1983,6 +2313,61 @@ fn has_black_background(output: &Output) -> bool {
         matches!(&shape.shape, egui::Shape::Rect(rect)
             if rect.rect.size() == Vec2::splat(192.0) && rect.fill == egui::Color32::BLACK)
     })
+}
+
+/// Toggle **No frame** through the public menu and return every root viewport
+/// command emitted while doing so (the checkbox reacts on the press pass).
+fn toggle_no_frame_collecting_commands(
+    ctx: &egui::Context,
+    app: &mut EmoteApp,
+) -> Vec<ViewportCommand> {
+    step(ctx, app, vec![]);
+    let p = Pos2::new(20.0, 20.0);
+    step(
+        ctx,
+        app,
+        vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Secondary, true),
+        ],
+    );
+    step(ctx, app, vec![button(p, PointerButton::Secondary, false)]);
+    step(ctx, app, vec![]);
+    let output = menu::take();
+    let p = output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "No frame" => {
+                Some(text.pos + Vec2::splat(4.0))
+            }
+            _ => None,
+        })
+        .expect("menu option must be painted: No frame");
+    menu::events(vec![
+        Event::PointerMoved(p),
+        button(p, PointerButton::Primary, true),
+    ]);
+    let pressed = step(ctx, app, vec![]);
+    menu::events(vec![button(p, PointerButton::Primary, false)]);
+    let released = step(ctx, app, vec![]);
+    let settled = step(ctx, app, vec![]);
+    let mut commands = pressed.viewport_output[&egui::ViewportId::ROOT]
+        .commands
+        .clone();
+    commands.extend(
+        released.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .cloned(),
+    );
+    commands.extend(
+        settled.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .cloned(),
+    );
+    commands
 }
 
 #[test]

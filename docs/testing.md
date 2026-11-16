@@ -35,7 +35,7 @@ Linux builds need suitable graphics/toolchain libraries.
 | Test file | What its passing tests establish |
 | --- | --- |
 | [`tests/receiver.rs`](../tests/receiver.rs), 19 | Real TCP/HTTP validation, exact status/body assertions, rejection preserving snapshot and notification count, byte/deadline/connection bounds, PNG normalization, publication ordering, snapshots, bind failures, and owned shutdown; includes three response-reader guards |
-| [`tests/window.rs`](../tests/window.rs), 25 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry, no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
+| [`tests/window.rs`](../tests/window.rs), 33 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip with the 45%-transparency toggle-on default and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry with whole-physical-pixel scales and snapped edges at every supported `pixels_per_point` (documented fractional fallback below 64×65 physical pixels), no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
 | [`tests/sessions.rs`](../tests/sessions.rs), 4 | Deterministic registry lease/expiry, reactivation, isolation, retention, ordering, legacy compatibility, caps, and finite replay horizon |
 | [`src/app.rs`](../src/app.rs), 1 | Checkbox-driven opaque → transparent → opaque shadow policy; no native window or compositor is exercised |
 | [`tests/startup.rs`](../tests/startup.rs), 1 ignored on macOS | An explicitly launched production process reports an occupied fixed port and terminates as expected on that host |
@@ -562,6 +562,45 @@ This establishes real composition/delivery to the actual receiver, not human
 visual behavior or framebuffer capture of these two real frames. The generic
 native framebuffer smoke above remains separate evidence.
 
+## Avatar-size slider and frame-independent content sizing
+
+The four per-avatar size buttons (128/192/256/384) were replaced by a five-step
+egui slider with live x1–x5 value text. The correction round then replaced the
+interim "64-point content side" canvas: the canvas now **derives from the
+avatar's rendered image**, never the reverse. The step x1–x5 is the points per
+source texel of the 64-point image; the composition adds the image's one
+source separation row (64×step by 65×step points); a framed tile wraps the
+composition so the frame's clear opening (851 of the 1100 artwork columns)
+contains it plus three logical points of snapping slack (`(1100, 1092) ×
+(65×step + 3) / 851`), absorbing the inward whole-physical-pixel fit and egui's
+1/32-point viewport rounding (`GUI_ROUNDING`) so the framed image never loses
+a level; unframed tiles shrink to exactly the composition; unframed
+multi-avatar cards budget their real four-point insets and five-point gaps
+around it; and the waiting surface keeps its native 192×192 square at every
+step (the clock fallback uses the composition). Resize dedup, per-session
+sizes, stacking, no-drag, and exit behavior are unchanged; `toggle_option` and
+`select_menu_option` (which now returns the settle pass after a click, because
+the immediate child renders after its root pass closure) tolerate exactly the
+deliberate resize commands while still forbidding moves and closes.
+
+First-round RED failed six public tests (slider caption absent, old button
+labels, `count × tile` command expectations). Correction RED failed the two
+new public regressions against the interim implementation: at x1 the framed
+canvas commanded 82.7×82.7 (losing the separation row) instead of 87.9×87.3,
+and the multi-avatar canvas 661.8×330.9 instead of 679.9×337.5 — the interim
+square canvas made the inward-snapped fit lose a whole step from x2 upward
+(x5 drew 256 instead of 320 points, confirmed in a native screenshot).
+GREEN passed the full offline suite. The regressions drive all five steps
+through `menu::slider_position` with real egui pointer events and assert the
+**actual rendered image width and height equal 64×step exactly at 100% DPI**, framed and unframed, single and paired, both orientations, plus the exact
+per-step canvas commands, separation-row reclaim on **No frame**, resize dedup,
+count retention at the chosen step, and packed-card inset/gap budgeting. At
+fractional scale factors (1.25/1.5/2.0) the rendered image keeps at least the
+chosen step's whole physical level — never one less — under the existing
+whole-physical-pixel policy (`assert_whole_physical_pixels`). Command values
+themselves are exact f32 and unaffected by viewport rounding. Rendering, fit
+helpers, receiving, and clock behavior are unchanged.
+
 ## Final manual verification — still outstanding
 
 Use this checklist to gather missing evidence, not as a record of completed work:
@@ -589,7 +628,7 @@ Use this checklist to gather missing evidence, not as a record of completed work
   traffic still renders. Many sessions may exceed monitor width; no overflow
   handling is promised. These multi-avatar native checks have not been performed.
 - [ ] With another ordinary window overlapping, visually check always-on-top
-  behavior. Check primary drag, right-click size choices (128/192/256/384), and
+  behavior. Check primary drag, right-click avatar-size slider steps (x1–x5), and
   Exit. Confirm menu selection does not start a drag and exit releases port 8001.
 - [ ] On a contrasting desktop background, confirm the initial window surface is
   opaque black. Right-click → **Transparent background**: check that unused space
