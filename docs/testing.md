@@ -333,7 +333,7 @@ Image6 confirmed unequal first/last margins: background bounds followed packed
 image edges instead of each card having its own padding. The human selected
 correcting this before publication, with five clear pixels between card contours.
 The surface extent and ordering stay unchanged. Card regions now have equal
-sizes; each uses the original 64-by-69 fit and five-source-row top compensation
+sizes; each uses the original 64-by-65 fit and one-source-row top compensation
 inside a four-point inset. This may slightly reduce vertical image size, rather
 than increasing the native window dimensions. Embedded source pixels are unchanged.
 
@@ -387,7 +387,7 @@ neighbor test saw one mesh instead of two, the size menu requested 256×256 inst
 of 512×256 for two avatars, and reselecting 192 emitted an unnecessary resize.
 After implementation the same command passed all 11 tests; the full offline suite
 then passed all 35. The new public HTTP/headless-egui tests check stable neighboring
-geometry, five-row padding, per-session texture identity and isolated pixel updates,
+geometry, one-row padding, per-session texture identity and isolated pixel updates,
 nearest filtering, heartbeat-only upload suppression, handle release after close,
 last-image retention, replacement by a new session, and per-avatar size selection
 from the second tile. Existing single-avatar geometry, alpha/background, native
@@ -577,7 +577,7 @@ Use this checklist to gather missing evidence, not as a record of completed work
   Exit. Confirm menu selection does not start a drag and exit releases port 8001.
 - [ ] On a contrasting desktop background, confirm the initial window surface is
   opaque black. Right-click → **Transparent background**: check that unused space
-  and the added five-source-row top padding reveal the desktop, fully transparent
+  and the added one-source-row top padding reveal the desktop, fully transparent
   PNG pixels reveal it, and partial-alpha pixels blend with it. Confirm opaque
   black PNG pixels, including the sender's bottom gap, remain black; the full
   image and nearest-neighbor edges must remain unchanged.

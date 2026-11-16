@@ -40,6 +40,57 @@ fn load_avatar_frame(ctx: &egui::Context) -> TextureHandle {
     )
 }
 
+/// Fit the virtual 64×65 composition (the image plus its one padding row) into
+/// `rect` with the largest whole number of physical pixels per source pixel at
+/// the context's current `pixels_per_point`, snapping every image edge onto an
+/// integer physical pixel. `TextureOptions::NEAREST` then always shows square,
+/// unskewed pixels whatever scale factor the display reports. Faithful source
+/// pixels take priority over filling the rectangle, so margins may grow. Only
+/// below one physical pixel per source pixel does the fit degrade to the
+/// legacy fractional contain scale; the image never leaves `rect`. Returns the
+/// scale in logical points and the image rectangle (`Rect::NOTHING`, skip
+/// painting, when nothing fits).
+pub fn snapped_physical_image_fit(rect: egui::Rect, pixels_per_point: f32) -> (f32, egui::Rect) {
+    let ppp = pixels_per_point.max(f32::EPSILON);
+    // Inward-snapped integer physical bounds can never leave `rect`.
+    let min_x = (rect.min.x * ppp).ceil();
+    let max_x = (rect.max.x * ppp).floor();
+    let min_y = (rect.min.y * ppp).ceil();
+    let max_y = (rect.max.y * ppp).floor();
+    let width = (max_x - min_x).max(0.0);
+    let height = (max_y - min_y).max(0.0);
+    let per_texel = (width / 64.0).min(height / 65.0);
+    if per_texel < 1.0 {
+        // Legacy fractional fallback below one physical pixel per source pixel:
+        // native pixel fidelity is impossible, so keep the previous exact
+        // contain fit instead of snapping away a sub-pixel image.
+        let scale = (rect.width() / 64.0).min(rect.height() / 65.0);
+        if scale <= 0.0 {
+            return (0.0, egui::Rect::NOTHING);
+        }
+        let image = egui::Rect::from_center_size(
+            rect.center() + egui::vec2(0.0, 0.5 * scale),
+            Vec2::splat(64.0 * scale),
+        );
+        return (scale, image);
+    }
+    let physical = per_texel.floor();
+    if physical <= 0.0 {
+        return (0.0, egui::Rect::NOTHING);
+    }
+    // Center on whole physical pixels; the padding row stays above the image.
+    let start_x = min_x + ((width - 64.0 * physical) / 2.0).floor();
+    let start_y = min_y + ((height - 65.0 * physical) / 2.0).floor();
+    let image = egui::Rect::from_min_max(
+        egui::pos2(start_x / ppp, (start_y + physical) / ppp),
+        egui::pos2(
+            (start_x + 64.0 * physical) / ppp,
+            (start_y + 65.0 * physical) / ppp,
+        ),
+    );
+    (physical / ppp, image)
+}
+
 /// Intersect the image quad with the rounded card before deriving its UVs.
 /// Background rounding alone cannot mask opaque pixels at the image's foot.
 fn paint_rounded_card_image(
@@ -337,15 +388,13 @@ impl EmoteApp {
             } else {
                 (rect, None)
             };
-            // Five padding rows balance the sender's five black rows at its foot.
-            let scale = (rect.width() / 64.0).min(rect.height() / 69.0);
-            let image_rect = egui::Rect::from_min_size(
-                egui::pos2(
-                    rect.center().x - 32.0 * scale,
-                    rect.center().y - 69.0 * scale / 2.0 + 5.0 * scale,
-                ),
-                Vec2::splat(64.0 * scale),
-            );
+            // Keep one source row of padding above the complete image, scaled
+            // in whole physical pixels with snapped edges so NEAREST keeps
+            // square pixels at any display scale factor.
+            let (_, image_rect) = snapped_physical_image_fit(rect, ui.ctx().pixels_per_point());
+            if !image_rect.is_positive() {
+                continue;
+            }
             if let Some((span, gap)) = packed_layout {
                 paint_rounded_card_image(
                     ui.painter(),

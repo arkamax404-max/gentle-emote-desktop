@@ -76,12 +76,16 @@ unchecked. The waiting surface has no decorative frame before an image arrives.
 Startup waits in one
 192-pixel square. Physical dimensions also follow the OS display scale. Many
 sessions can exceed the monitor's width or height; scrolling, wrapping, and other
-overflow policies are outside this change. The desktop adds black top padding
-equivalent to five source rows,
-balancing the sender image's existing five-row black bottom gap. The complete
-64×64 image is uniformly fitted within a virtual 64×69 composition, centered in
-each tile without cropping or changing the PNG. Nearest-neighbor filtering
-keeps texel edges sharp. The background is **opaque black by default**, with
+overflow policies are outside this change. The desktop adds one source row of
+black top padding above the complete image. The complete 64×64 image is
+uniformly fitted within a virtual 64×65 composition, centered in each tile
+without cropping or changing the PNG, using the largest whole number of
+physical pixels per source pixel at the display's current scale factor, with
+every edge snapped to the physical pixel grid: pixels always stay square, and
+the image may use larger margins rather than a fractional scale. Only surfaces
+smaller than 64×65 physical pixels fall back to a fractional contain fit.
+Nearest-neighbor filtering keeps texel edges sharp. The background is
+**opaque black by default**, with
 **Transparent background** unchecked and its slider disabled at 0% transparency.
 Checking it enables **Background transparency**, initially at 100% (invisible).
 The slider changes only the background; images, embedded labels and the options

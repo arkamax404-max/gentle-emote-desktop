@@ -1,6 +1,6 @@
 use eframe::egui::{self, Event, PointerButton, Pos2, Vec2, ViewportCommand};
 use gentle_emote_desktop::{
-    app::{EmoteApp, native_options},
+    app::{EmoteApp, native_options, snapped_physical_image_fit},
     receiver::Receiver,
 };
 #[path = "support/menu.rs"]
@@ -142,6 +142,39 @@ fn frames(output: &Output) -> Vec<(egui::TextureId, egui::Rect)> {
             .then(|| (mesh.texture_id, mesh.calc_bounds()))
         })
         .collect()
+}
+
+/// Every image edge must sit on an integer physical pixel at the context's
+/// `pixels_per_point`, the quad must stay square, and its width must be a
+/// whole number of 64-pixel source repeats (native scale, never fractional).
+fn assert_whole_physical_pixels(image: egui::Rect, ppp: f32, context: &str) {
+    for value in [image.min.x, image.max.x, image.min.y, image.max.y] {
+        let physical = value * ppp;
+        assert!(
+            (physical - physical.round()).abs() < 1e-3,
+            "{context}: edge {value} must sit on an integer physical pixel at {ppp}"
+        );
+    }
+    assert!(
+        (image.width() - image.height()).abs() < 1e-3,
+        "{context}: NEAREST pixels must stay square, got {image:?}"
+    );
+    let physical_width = image.width() * ppp;
+    assert!(
+        (physical_width / 64.0 - (physical_width / 64.0).round()).abs() < 1e-3,
+        "{context}: {physical_width} physical pixels must be a whole number of 64 source pixels"
+    );
+}
+
+fn avatar_mesh(output: &Output, id: egui::TextureId) -> egui::epaint::Mesh {
+    output
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) if mesh.texture_id == id => Some((**mesh).clone()),
+            _ => None,
+        })
+        .expect("avatar mesh must be painted")
 }
 
 fn frame_pixels() -> (png::OutputInfo, Vec<u8>) {
@@ -315,24 +348,24 @@ fn unframed_cards_keep_uniform_individual_composition_and_clear_separators() {
                     assert_eq!(paints.len(), if opacity == 0.0 { 0 } else { count });
                     for (index, ((_, image), card)) in images.iter().zip(&cards).enumerate() {
                         let fitted = card.shrink(4.0);
-                        let scale = (fitted.width() / 64.0).min(fitted.height() / 69.0);
-                        let expected = egui::Rect::from_min_size(
-                            Pos2::new(
-                                fitted.center().x - 32.0 * scale,
-                                fitted.center().y - 69.0 * scale / 2.0 + 5.0 * scale,
-                            ),
-                            Vec2::splat(64.0 * scale),
-                        );
+                        let (_, expected) = snapped_physical_image_fit(fitted, 1.0);
+                        let scale = expected.width() / 64.0;
                         assert!(
                             (image.min - expected.min).length() < 0.001
                                 && (image.max - expected.max).length() < 0.001,
-                            "each card must apply its own PNG fit and top compensation: index={index}, vertical={vertical}, actual={image:?}, expected={expected:?}"
+                            "each card must apply its own whole-physical-pixel PNG fit and top compensation: index={index}, vertical={vertical}, actual={image:?}, expected={expected:?}"
                         );
-                        let top = image.top() - card.top();
-                        let content_bottom = card.bottom() - (image.bottom() - 5.0 * scale);
+                        assert_whole_physical_pixels(*image, 1.0, "unframed card");
+                        // The composition (image plus its one-source-row top
+                        // padding) is the helper's exact rect and must stay
+                        // inside the fitted card on whole physical pixels.
+                        let comp = egui::Rect::from_min_max(
+                            egui::pos2(expected.min.x, expected.min.y - scale),
+                            expected.max,
+                        );
                         assert!(
-                            (top - content_bottom).abs() < 0.001,
-                            "balance each PNG's five source footer rows independently"
+                            fitted.contains_rect(comp),
+                            "apply one source row of top padding inside each card: index={index}, vertical={vertical}, comp={comp:?}, fitted={fitted:?}"
                         );
                         if opacity > 0.0 {
                             assert!(
@@ -468,10 +501,9 @@ fn single_avatar_frame_follows_opaque_no_frame_and_transparency_controls() {
         let opaque = step(&ctx, &mut app, vec![]);
         assert_eq!(frames(&opaque).len(), usize::from(!no_frame));
         if no_frame {
-            let scale = 192.0 / 69.0;
             assert!(
-                (avatars(&opaque)[0].1.width() - 64.0 * scale).abs() < 0.001,
-                "No frame retains the original full-surface single-avatar fit"
+                (avatars(&opaque)[0].1.width() - 128.0).abs() < 0.001,
+                "No frame retains the original full-surface single-avatar composition at its whole-physical-pixel scale"
             );
         } else {
             assert_eq!(avatars(&opaque)[0].1, framed_bounds);
@@ -694,12 +726,10 @@ fn transparent_mode_uses_unframed_layout_and_preserves_opaque_frame_choice() {
                     vertical,
                 );
                 for ((_, image), card) in images.iter().zip(cards) {
-                    let fitted = card.shrink(4.0);
-                    let scale = (fitted.width() / 64.0).min(fitted.height() / 69.0);
-                    assert!((image.center().x - fitted.center().x).abs() < 0.001);
+                    let (_, expected) = snapped_physical_image_fit(card.shrink(4.0), 1.0);
                     assert!(
-                        (image.center().y - (fitted.center().y + 2.5 * scale)).abs() < 0.001,
-                        "automatic transparent layout must apply compensation per card"
+                        (image.center() - expected.center()).length() < 0.001,
+                        "automatic transparent layout must apply the whole-physical-pixel fit and compensation per card"
                     );
                 }
                 assert!(output.textures_delta.set.is_empty());
@@ -794,10 +824,18 @@ fn multi_avatar_png_frames_preserve_transparency_single_fit_and_labels() {
                     egui::Rect::from_min_size(Pos2::new(i as f32 * size, 0.0), Vec2::splat(size));
                 assert!(tile.contains_rect(*image));
                 if transparent {
-                    let scale = (size - 8.0) / 69.0;
+                    // Two cards share the row with a 5.0 separator, so each card
+                    // is narrower than its tile; mirror the app's fit exactly.
+                    let card = expected_unframed_cards(
+                        egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(size * 2.0, size)),
+                        2,
+                        false,
+                    )[i];
+                    let fitted = card.shrink(4.0);
+                    let (_, expected) = snapped_physical_image_fit(fitted, 1.0);
                     assert!(
-                        (image.width() - 64.0 * scale).abs() < 0.001,
-                        "transparent geometry unchanged"
+                        (image.width() - expected.width()).abs() < 0.001,
+                        "transparent geometry follows the whole-physical-pixel fit"
                     );
                 } else {
                     let frame = borders[i].1;
@@ -806,7 +844,10 @@ fn multi_avatar_png_frames_preserve_transparency_single_fit_and_labels() {
                         (frame.width() / frame.height() - 1100.0 / 1092.0).abs() < 0.001,
                         "preserve frame aspect ratio"
                     );
-                    assert!(image.width() > size * 0.65, "keep a usable avatar at128");
+                    assert!(
+                        image.width() >= 64.0 - 0.001,
+                        "keep at least one native physical pixel per source pixel at {size}"
+                    );
                     let lo = (image.min - frame.min) / frame.size();
                     let hi = (image.max - frame.min) / frame.size();
                     for y in (lo.y * info.height as f32).floor() as usize
@@ -943,8 +984,8 @@ fn stacking_selector_switches_axes_and_preserves_frames_and_transparent_gaps() {
     );
     let clear_images = avatars(&transparent);
     assert!(
-        ((clear_images[1].1.center().y - clear_images[0].1.center().y) - 194.5).abs() < 0.001,
-        "transparent cards preserve their equal 189.5-point heights plus five-point separation"
+        ((clear_images[1].1.center().y - clear_images[0].1.center().y) - 195.0).abs() < 0.001,
+        "transparent cards preserve their equal 189.5-point heights plus five-point separation; whole physical pixels snap the second card's fractional top upward by half a pixel"
     );
     drop(transparent);
     toggle_option(&ctx, &mut app, "No frame");
@@ -1209,8 +1250,8 @@ fn no_frame_toggle_is_independent_of_transparency_and_preserves_avatar_pixels() 
         "hiding only the decoration does not reupload image pixels"
     );
     assert!(
-        (avatars(&hidden)[0].1.width() - 64.0 * 184.0 / 69.0).abs() < 0.001,
-        "reclaim the unframed image fit"
+        (avatars(&hidden)[0].1.width() - 128.0).abs() < 0.001,
+        "reclaim the unframed image fit at whole physical pixels"
     );
     drop(hidden);
 
@@ -1439,16 +1480,19 @@ fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
     assert_eq!(tiles.len(), 2);
     assert!(tiles[0].1.right() < tiles[1].1.left());
     let artwork_scale = 192.0 / 1100.0;
-    let scale = (851.0 * artwork_scale) / 69.0;
     for (i, (_, rect)) in tiles.iter().enumerate() {
         let opening = egui::Rect::from_min_size(
             Pos2::new(i as f32 * 192.0, (192.0 - 1092.0 * artwork_scale) / 2.0)
                 + Vec2::new(125.0, 121.0) * artwork_scale,
             Vec2::splat(851.0 * artwork_scale),
         );
-        assert!((rect.center().x - opening.center().x).abs() < 0.001);
-        assert!((rect.top() - (opening.top() + 5.0 * scale)).abs() < 0.001);
-        assert!((rect.width() - 64.0 * scale).abs() < 0.001);
+        // The avatar keeps its whole-physical-pixel fit inside the frame opening.
+        let (_, expected) = snapped_physical_image_fit(opening, 1.0);
+        assert!(
+            (rect.min - expected.min).length() < 0.001
+                && (rect.max - expected.max).length() < 0.001,
+            "framed avatar must use the largest whole physical scale in the opening: {rect:?} vs {expected:?}"
+        );
     }
     assert!(
         first.viewport_output[&egui::ViewportId::ROOT]
@@ -1958,7 +2002,7 @@ fn upload_only_on_new_snapshot_and_use_nearest_filter() {
 }
 
 #[test]
-fn image_fits_with_five_source_rows_of_top_padding_and_full_uv() {
+fn image_fits_with_one_source_row_of_top_padding_and_full_uv() {
     let (ctx, mut app, address) = setup();
     step(&ctx, &mut app, vec![]);
     // No frame preserves the original full-surface single-avatar composition.
@@ -2011,14 +2055,9 @@ fn image_fits_with_five_source_rows_of_top_padding_and_full_uv() {
             .collect();
         assert_eq!(meshes.len(), 1);
         let mesh = meshes[0];
-        let scale = (surface.width() / 64.0).min(surface.height() / 69.0);
-        let expected = egui::Rect::from_min_size(
-            egui::pos2(
-                surface.center().x - 32.0 * scale,
-                surface.center().y - 69.0 * scale / 2.0 + 5.0 * scale,
-            ),
-            Vec2::splat(64.0 * scale),
-        );
+        let (scale, expected) = snapped_physical_image_fit(surface, 1.0);
+        assert!(scale >= 1.0, "supported sizes keep native physical pixels");
+        assert_whole_physical_pixels(expected, 1.0, "single avatar");
         assert_eq!(mesh.vertices.len(), 4);
         for (pos, uv) in [
             (expected.left_top(), egui::pos2(0.0, 0.0)),
@@ -2036,13 +2075,193 @@ fn image_fits_with_five_source_rows_of_top_padding_and_full_uv() {
             );
         }
         let top_gap = expected.top() - surface.top();
-        let content_bottom = expected.bottom() - 5.0 * scale;
-        assert!((top_gap - (surface.bottom() - content_bottom)).abs() < 0.001);
+        let content_bottom = expected.bottom() - 1.0 * scale;
+        assert!(
+            (top_gap - (surface.bottom() - content_bottom)).abs() <= 1.0 + 0.001,
+            "one source row of top padding, centered on whole physical pixels"
+        );
         assert!(surface.contains_rect(expected));
         assert!(output.shapes.iter().any(|shape| {
             matches!(&shape.shape, egui::Shape::Rect(rect)
                 if rect.rect == surface && rect.fill == egui::Color32::BLACK)
         }));
+    }
+}
+
+#[test]
+fn image_uses_whole_physical_pixels_with_snapped_edges_at_every_scale_factor() {
+    let (ctx, mut app, address) = setup();
+    step(&ctx, &mut app, vec![]);
+    session_request(address, "a", 1, "emote", 42);
+    step(&ctx, &mut app, vec![]);
+    let mut frame_baselines: Vec<(f32, egui::Rect)> = Vec::new();
+    let mut unframed = false;
+    for framed in [true, false] {
+        // Toggle at the default scale so the menu layout stays canonical.
+        ctx.set_pixels_per_point(1.0);
+        step(&ctx, &mut app, vec![]);
+        if unframed != !framed {
+            toggle_option(&ctx, &mut app, "No frame");
+            unframed = !framed;
+        }
+        for ppp in [1.0, 1.25, 1.5, 2.0] {
+            ctx.set_pixels_per_point(ppp);
+            // Absorb egui's zoom-transition pass, which rescales the previous
+            // surface instead of honoring the new raw screen rect once.
+            step(&ctx, &mut app, vec![]);
+            for size in [128.0, 192.0, 256.0, 384.0] {
+                let output = surface_step(&ctx, &mut app, Vec2::splat(size));
+                let surface = egui::Rect::from_min_size(Pos2::ZERO, Vec2::splat(size));
+                let images = avatars(&output);
+                assert_eq!(images.len(), 1);
+                let (id, image) = images[0];
+                let context = format!("framed={framed} ppp={ppp} size={size}");
+                assert_whole_physical_pixels(image, ppp, &context);
+                assert!(
+                    surface.contains_rect(image),
+                    "{context}: {image:?} must stay inside {surface:?}"
+                );
+                if framed {
+                    let borders = frames(&output);
+                    assert_eq!(borders.len(), 1);
+                    let (_, border) = borders[0];
+                    let artwork_scale = border.width() / 1100.0;
+                    let opening = egui::Rect::from_min_size(
+                        border.min + egui::vec2(125.0, 121.0) * artwork_scale,
+                        Vec2::splat(851.0 * artwork_scale),
+                    );
+                    let (_, expected) = snapped_physical_image_fit(opening, ppp);
+                    assert!(
+                        (image.min - expected.min).length() < 1e-3
+                            && (image.max - expected.max).length() < 1e-3,
+                        "{context}: framed fit must be the largest whole physical scale in the opening: {image:?} vs {expected:?}"
+                    );
+                    assert!(
+                        border.contains_rect(image),
+                        "{context}: the avatar must stay inside the frame opening"
+                    );
+                    let baseline = frame_baselines
+                        .iter()
+                        .find(|(s, _)| *s == size)
+                        .map(|(_, rect)| *rect)
+                        .unwrap_or_else(|| {
+                            frame_baselines.push((size, border));
+                            border
+                        });
+                    assert!(
+                        (border.min - baseline.min).length() < 1e-3
+                            && (border.max - baseline.max).length() < 1e-3,
+                        "the decorative frame keeps its fractional artwork fit at every scale factor: {border:?} vs {baseline:?}"
+                    );
+                } else {
+                    let (_, expected) = snapped_physical_image_fit(surface, ppp);
+                    assert!(
+                        (image.min - expected.min).length() < 1e-3
+                            && (image.max - expected.max).length() < 1e-3,
+                        "{context}: unframed fit must be the largest whole physical scale: {image:?} vs {expected:?}"
+                    );
+                    let mesh = avatar_mesh(&output, id);
+                    assert_eq!(
+                        mesh.vertices.len(),
+                        4,
+                        "{context}: unframed opaque single avatar keeps its full-UV quad"
+                    );
+                    for (pos, uv) in [
+                        (expected.left_top(), egui::pos2(0.0, 0.0)),
+                        (expected.right_top(), egui::pos2(1.0, 0.0)),
+                        (expected.left_bottom(), egui::pos2(0.0, 1.0)),
+                        (expected.right_bottom(), egui::pos2(1.0, 1.0)),
+                    ] {
+                        assert!(
+                            mesh.vertices.iter().any(|vertex| {
+                                vertex.pos.distance(pos) < 1e-3
+                                    && vertex.uv == uv
+                                    && vertex.color == egui::Color32::WHITE
+                            }),
+                            "{context}: missing image corner {pos:?} with full UV {uv:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_supported_surface_keeps_whole_physical_pixels_or_the_documented_fallback() {
+    let (ctx, mut app, address) = setup();
+    step(&ctx, &mut app, vec![]);
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "b", 1, "emote", 84);
+    step(&ctx, &mut app, vec![]);
+    toggle_option(&ctx, &mut app, "No frame");
+    for ppp in [1.0, 1.25, 1.5, 2.0] {
+        ctx.set_pixels_per_point(ppp);
+        // Absorb egui's zoom-transition pass before measuring geometry.
+        step(&ctx, &mut app, vec![]);
+        for size in [128.0, 192.0, 256.0, 384.0] {
+            let dimensions = Vec2::new(size * 2.0, size);
+            let output = surface_step(&ctx, &mut app, dimensions);
+            let bounds = egui::Rect::from_min_size(Pos2::ZERO, dimensions);
+            let images = avatars(&output);
+            assert_eq!(images.len(), 2);
+            let cards = expected_unframed_cards(bounds, 2, false);
+            for (index, ((_, image), card)) in images.iter().zip(&cards).enumerate() {
+                let context = format!("ppp={ppp} size={size} card={index}");
+                assert_whole_physical_pixels(*image, ppp, &context);
+                assert!(
+                    bounds.contains_rect(*image),
+                    "{context}: {image:?} must stay inside {bounds:?}"
+                );
+                let (_, expected) = snapped_physical_image_fit(card.shrink(4.0), ppp);
+                assert!(
+                    (image.min - expected.min).length() < 1e-3
+                        && (image.max - expected.max).length() < 1e-3,
+                    "{context}: card fit must be the largest whole physical scale: {image:?} vs {expected:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn undersized_surfaces_keep_contained_fallback_images_at_any_scale_factor() {
+    let (ctx, mut app, address) = setup();
+    step(&ctx, &mut app, vec![]);
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "b", 1, "emote", 84);
+    step(&ctx, &mut app, vec![]);
+    toggle_option(&ctx, &mut app, "No frame");
+    for ppp in [1.0, 1.5] {
+        ctx.set_pixels_per_point(ppp);
+        // Absorb egui's zoom-transition pass before measuring geometry.
+        step(&ctx, &mut app, vec![]);
+        for vertical in [false, true] {
+            for extent in [16.0, 4.0] {
+                let size = if vertical {
+                    Vec2::new(192.0, extent)
+                } else {
+                    Vec2::new(extent, 192.0)
+                };
+                let output = surface_step(&ctx, &mut app, size);
+                let bounds = egui::Rect::from_min_size(Pos2::ZERO, size);
+                let images = avatars(&output);
+                assert_eq!(images.len(), 2, "narrow resizes must not discard avatars");
+                for (index, (_, image)) in images.iter().enumerate() {
+                    let context =
+                        format!("ppp={ppp} vertical={vertical} extent={extent} card={index}");
+                    assert!(image.is_positive(), "{context}");
+                    assert!(
+                        bounds.contains_rect(*image),
+                        "{context}: {image:?} must not overflow {bounds:?}"
+                    );
+                    assert!(
+                        image.width() * ppp < 64.0,
+                        "{context}: below 65 physical pixels the documented fractional fallback applies"
+                    );
+                }
+            }
+        }
     }
 }
 

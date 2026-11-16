@@ -199,13 +199,21 @@ avatars use the existing artwork opening. Stacked-card contours and spacing are 
 No click-through is enabled.
 
 Both modes use the same texture and full image UVs. The complete 64×64 image is
-uniformly fitted within each tile into a centered virtual 64×69 composition, with
-five source rows of padding above it. That added padding becomes transparent when enabled; opaque
+uniformly fitted within each tile into a centered virtual 64×65 composition, with
+one source row of padding above it. That added padding becomes transparent when enabled; opaque
 black pixels already in the PNG, including the sender's five-row bottom gap,
 remain black. No color-keying, cropping, or pixel rewriting occurs, and toggling
 the background does not require re-uploading an unchanged frame. All opaque
 avatar tiles, including a single avatar, use the embedded `assets/avatar-frame.png`
 unless **No frame** is checked.
+The fit uses the largest whole number of physical pixels per source pixel for the
+display's current `pixels_per_point` (including fractional scale factors such as
+1.25 or 1.5) and snaps every image edge onto an integer physical pixel, so
+`NEAREST` always renders square, unskewed pixels. Faithful source pixels take
+priority over filling the tile: the image may be smaller with larger margins
+than a fractional fit. Only when the available area is smaller than 64×65
+physical pixels does the fit degrade to the fractional contain scale, still
+without overflowing. The decorative frame keeps its fractional artwork fit.
 One lazily loaded shared texture holds the cropped RGBA artwork. Its 851 × 851
 clear opening contains the complete virtual composition; the frame is painted
 above the avatar without covering labels. Uniform fitting preserves the frame's
@@ -221,8 +229,8 @@ The independent **No frame** checkbox starts unchecked and resets on restart.
 When checked, or whenever background opacity is below 100%, all avatars
 omit the artwork. For multiple avatars, five logical pixels are reserved between card contours, then
 the remaining extent is divided into equal card regions along the selected axis.
-Each card independently fits the original 64-by-69 composition inside a four-point
-inset, including the five-source-row top compensation; there is no global image
+Each card independently fits the original 64-by-65 composition inside a four-point
+inset, including the one-source-row top compensation; there is no global image
 group offset. Margins are therefore consistent across first, middle and last
 cards. Bitmap-to-bitmap spacing includes these internal margins; the clear
 separator itself is exactly five points. Vertical image size may shrink slightly
