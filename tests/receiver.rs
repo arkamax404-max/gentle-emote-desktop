@@ -60,11 +60,15 @@ fn read_wire(mut reader: impl Read, expect_transport_close: bool) -> std::io::Re
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     if let Err(error) = read {
         // An early rejection can close with unread inbound bytes, producing a
-        // reset *after* the entire HTTP response. Never hide a partial response
-        // or a different I/O error. Callers still assert exact status and body.
+        // reset or abort *after* the entire HTTP response. Never hide a partial
+        // response or another I/O error. Callers still assert exact status/body.
         let complete = complete_length_framed_response(&text);
         let transport_only = expect_transport_close && text.is_empty();
-        if error.kind() != std::io::ErrorKind::ConnectionReset || !(complete || transport_only) {
+        let teardown = matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+        );
+        if !teardown || !(complete || transport_only) {
             return Err(error);
         }
     }
@@ -72,7 +76,7 @@ fn read_wire(mut reader: impl Read, expect_transport_close: bool) -> std::io::Re
 }
 
 // Narrow test-only framing guard: the receiver's error replies have one explicit
-// Content-Length, never Transfer-Encoding. Do not infer completion from EOF/reset.
+// Content-Length, never Transfer-Encoding. Do not infer completion from teardown.
 fn complete_length_framed_response(text: &str) -> bool {
     let Some((head, body)) = text.split_once("\r\n\r\n") else {
         return false;
@@ -130,12 +134,12 @@ fn complete_length_framed_response(text: &str) -> bool {
 }
 
 // The bounds probes explicitly expect a transport-only close for some inputs.
-// Only this separate helper permits an *empty* reset, never a partial HTTP reply.
+// Only this helper permits an *empty* reset/abort, never a partial HTTP reply.
 fn transport_response(socket: TcpStream) -> String {
     read_wire(socket, true).unwrap()
 }
 
-// A deterministic reset avoids depending on the OS scheduling the early 413
+// A deterministic read error avoids depending on the OS scheduling the early 413
 // before or after all request bytes have reached the server.
 struct ReadError(std::io::ErrorKind);
 impl Read for ReadError {
@@ -160,26 +164,59 @@ fn response_helper_accepts_reset_only_after_complete_framed_response() {
 }
 
 #[test]
+fn response_helper_accepts_aborted_only_after_complete_framed_response() {
+    let reader = std::io::Cursor::new(COMPLETE_413.as_bytes())
+        .chain(ReadError(std::io::ErrorKind::ConnectionAborted));
+    assert_response(&read_response(reader).unwrap(), 413, "body too large\n");
+    assert_eq!(
+        read_wire(ReadError(std::io::ErrorKind::ConnectionAborted), true).unwrap(),
+        ""
+    );
+}
+
+#[test]
 fn response_helper_rejects_incomplete_or_ambiguous_reset_and_other_errors() {
-    // Every truncated prefix, including empty input and a complete header with
-    // only part of the body, must remain a read failure.
-    for end in 0..COMPLETE_413.len() {
-        let reader = std::io::Cursor::new(&COMPLETE_413.as_bytes()[..end])
-            .chain(ReadError(std::io::ErrorKind::ConnectionReset));
-        assert!(read_response(reader).is_err(), "accepted prefix {end}");
-        if end > 0 {
-            let reader = std::io::Cursor::new(&COMPLETE_413.as_bytes()[..end])
-                .chain(ReadError(std::io::ErrorKind::ConnectionReset));
-            assert!(
-                read_wire(reader, true).is_err(),
-                "transport path accepted prefix {end}"
+    for kind in [
+        std::io::ErrorKind::ConnectionReset,
+        std::io::ErrorKind::ConnectionAborted,
+    ] {
+        assert_rejected_teardown(kind);
+    }
+    for kind in [
+        std::io::ErrorKind::TimedOut,
+        std::io::ErrorKind::UnexpectedEof,
+    ] {
+        for expect_transport_close in [false, true] {
+            let reader = std::io::Cursor::new(COMPLETE_413.as_bytes()).chain(ReadError(kind));
+            assert_eq!(
+                read_wire(reader, expect_transport_close)
+                    .unwrap_err()
+                    .kind(),
+                kind
+            );
+            assert_eq!(
+                read_wire(ReadError(kind), expect_transport_close)
+                    .unwrap_err()
+                    .kind(),
+                kind
             );
         }
     }
-    assert_eq!(
-        read_wire(ReadError(std::io::ErrorKind::ConnectionReset), true).unwrap(),
-        ""
-    );
+}
+
+fn assert_rejected_teardown(kind: std::io::ErrorKind) {
+    // Every truncated prefix, including empty input and a complete header with
+    // only part of the body, must remain a read failure.
+    for end in 0..COMPLETE_413.len() {
+        let reader = std::io::Cursor::new(&COMPLETE_413.as_bytes()[..end]).chain(ReadError(kind));
+        assert_eq!(read_response(reader).unwrap_err().kind(), kind);
+        if end > 0 {
+            let reader =
+                std::io::Cursor::new(&COMPLETE_413.as_bytes()[..end]).chain(ReadError(kind));
+            assert_eq!(read_wire(reader, true).unwrap_err().kind(), kind);
+        }
+    }
+    assert_eq!(read_wire(ReadError(kind), true).unwrap(), "");
     for wire in [
         COMPLETE_413.replace("Content-Length: 15", "Content-Length: 14"),
         COMPLETE_413.replace("Content-Length: 15", "Content-Length: 16"),
@@ -200,16 +237,16 @@ fn response_helper_rejects_incomplete_or_ambiguous_reset_and_other_errors() {
         COMPLETE_413.replace("HTTP/1.1 413", "HTTP/1.1 xyz"),
         COMPLETE_413.replace("Connection: close", "not a header"),
     ] {
-        let reader = std::io::Cursor::new(wire.as_bytes())
-            .chain(ReadError(std::io::ErrorKind::ConnectionReset));
-        assert!(read_response(reader).is_err(), "accepted {wire:?}");
-    }
-    for kind in [
-        std::io::ErrorKind::TimedOut,
-        std::io::ErrorKind::UnexpectedEof,
-    ] {
-        let reader = std::io::Cursor::new(COMPLETE_413.as_bytes()).chain(ReadError(kind));
-        assert_eq!(read_response(reader).unwrap_err().kind(), kind);
+        for expect_transport_close in [false, true] {
+            let reader = std::io::Cursor::new(wire.as_bytes()).chain(ReadError(kind));
+            assert_eq!(
+                read_wire(reader, expect_transport_close)
+                    .unwrap_err()
+                    .kind(),
+                kind,
+                "accepted {wire:?}"
+            );
+        }
     }
 }
 
@@ -217,15 +254,19 @@ fn response_helper_rejects_incomplete_or_ambiguous_reset_and_other_errors() {
 fn response_helper_does_not_bypass_exact_payload_assertions() {
     // Correct framing alone cannot turn the wrong payload into a passing test.
     let wire = COMPLETE_413.replace("body too large", "body too small");
-    let reader =
-        std::io::Cursor::new(wire.as_bytes()).chain(ReadError(std::io::ErrorKind::ConnectionReset));
-    let result = read_response(reader).expect("complete framing must be readable");
-    assert!(
-        std::panic::catch_unwind(|| {
-            assert_response(&result, 413, "body too large\n");
-        })
-        .is_err()
-    );
+    for kind in [
+        std::io::ErrorKind::ConnectionReset,
+        std::io::ErrorKind::ConnectionAborted,
+    ] {
+        let reader = std::io::Cursor::new(wire.as_bytes()).chain(ReadError(kind));
+        let result = read_response(reader).expect("complete framing must be readable");
+        assert!(
+            std::panic::catch_unwind(|| {
+                assert_response(&result, 413, "body too large\n");
+            })
+            .is_err()
+        );
+    }
 }
 
 fn request(address: SocketAddr, method: &str, path: &str, headers: &str, body: &[u8]) -> String {
