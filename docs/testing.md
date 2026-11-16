@@ -439,7 +439,10 @@ fallback, different session headers at the same instant, and identical pixels
 outside rows 1–5. Static ellipsis checks cover 16/17/128-character IDs, the 63-pixel
 fit, exact dot pixels, and header stability while the clock continues updating.
 Every validated ASCII ID character has ink in its single centered cell, and
-uppercase/lowercase pairs remain distinct. The canonical golden is unchanged.
+uppercase/lowercase ASCII pairs render identical pixels. ASCII normalization
+happens before truncation; unsupported Unicode still occupies one blank cell
+without transliteration or case expansion. A separate regression covers mixed
+ASCII/Unicode names and truncation while retaining header-only changes. The canonical golden is unchanged.
 
 The test-first baseline explicitly scaffolded the new API as delegation to
 `render(now)`, not as a pre-existing API. All three new tests then failed actual
@@ -463,16 +466,18 @@ keyed-cache wiring all five focused tests passed. Logs are under
 `target/compact-clock-session-header/session-cache-{red,green}.log`.
 These header/cache checks do not establish compact clock layout or native visual acceptance.
 
-### Compact clock geometry checks
+### Avatar-sized clock geometry checks
 
-Three `compact_clock_*` public HTTP/headless-egui tests cover mixed-neighbor
-mesh/UV/texture/background preservation, compact rounded underlays and clipped
-clock path corners, all-clock native size requests and explicitly applied viewports,
-and restoration of padded mixed sizing. The matrix exercises both orientations,
+Three `compact_clock_*` public HTTP/headless-egui tests now cover mixed-neighbor
+mesh/UV/texture/background preservation, allocated-card underlays and complete
+four-corner clock UVs (no clipped path pixels). Ordinary → mixed → all-clock
+transitions retain the same padded canvas and background bounds; all-clock →
+mixed → all-clock also emits no resize commands. The matrix exercises both orientations,
 steps x1/x3/x5, DPI 1/1.25/1.61, and opaque No-frame/partial/zero backgrounds.
-Single/global checks preserve date-only fallback, explicit framed-clock preference,
-root drag and menu access. Expected compact bounds come from observed image
-bounds, not a production compact-geometry helper. Logs use
+Single/global checks assert full allocated-surface backgrounds and preserve
+date-only fallback, explicit framed-clock preference, root drag and menu access.
+Expected card bounds come from ordinary-avatar outputs or supplied surfaces,
+not a production clock-geometry helper. Logs use
 `target/compact-clock-session-header/compact-*.log`. These tests inspect viewport
 commands, not OS-applied sizing, compositor output or human visual acceptance.
 

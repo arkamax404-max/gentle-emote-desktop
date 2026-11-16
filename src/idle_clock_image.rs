@@ -177,7 +177,9 @@ impl Canvas {
 /// Alternate the local date with a caller-supplied label every five seconds.
 /// The legacy API name is retained; the app supplies a validated project name,
 /// never an identity fallback. Empty labels keep the date; over 16 character
-/// cells use the first 13 + `...`. The existing compact alphabet is unchanged:
+/// cells use the first 13 + `...`. Display labels are ASCII-uppercased before
+/// counting/truncation; metadata and unsupported Unicode are unchanged.
+/// The existing compact alphabet is unchanged:
 /// unsupported characters reserve blank cells. Only header rows 1..=5 change;
 /// the canonical renderer owns all other pixels.
 pub fn render_for_session(now: DateTime<FixedOffset>, session_id: &str) -> Frame {
@@ -185,9 +187,10 @@ pub fn render_for_session(now: DateTime<FixedOffset>, session_id: &str) -> Frame
     if session_id.is_empty() || now.timestamp_millis().div_euclid(5000).rem_euclid(2) == 0 {
         return frame;
     }
-    let mut label: String = session_id.chars().take(16).collect();
-    if session_id.chars().count() > 16 {
-        label = session_id.chars().take(13).collect();
+    let display_label = session_id.to_ascii_uppercase();
+    let mut label: String = display_label.chars().take(16).collect();
+    if display_label.chars().count() > 16 {
+        label = display_label.chars().take(13).collect();
         label.push_str("...");
     }
     let left = (64 - (label.chars().count() as i64 * 4 - 1)) / 2;

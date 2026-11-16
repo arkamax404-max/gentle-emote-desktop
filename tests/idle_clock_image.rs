@@ -101,10 +101,28 @@ fn session_header_supports_every_validated_ascii_id_character_and_case() {
         }
     }
     for ch in 'A'..='Z' {
-        assert_ne!(
-            header(&render_for_session(now, &ch.to_string()).rgba),
-            header(&render_for_session(now, &ch.to_ascii_lowercase().to_string()).rgba)
+        assert_eq!(
+            render_for_session(now, &ch.to_string()).rgba,
+            render_for_session(now, &ch.to_ascii_lowercase().to_string()).rgba
         );
+    }
+}
+
+#[test]
+fn session_header_ascii_uppercase_preserves_unicode_blank_cells() {
+    let now = at("1970-01-01T00:00:05+00:00");
+    for (label, expected) in [
+        ("Mi título", "MI T TULO"),
+        ("aßéz", "A  Z"),
+        ("abcdefghijklmßéxyz", "ABCDEFGHIJKLM..."),
+    ] {
+        // Unsupported Unicode consumes one blank cell, without transliteration
+        // or Unicode case expansion (ß must not become SS).
+        assert_eq!(
+            render_for_session(now, label).rgba,
+            render_for_session(now, expected).rgba
+        );
+        assert_only_header_changes(now, label);
     }
 }
 

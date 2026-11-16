@@ -34,11 +34,11 @@ Exact OS error codes and text are host-specific.
 | --- | --- |
 | Start with no sender | Readable waiting message and control hints |
 | Primary-button drag | Ask the OS to move the window |
-| Right-click anywhere | Open a separate options window: avatar-size slider with five steps x1–x5 (the avatar's 64-point image renders at that many points per source texel, x3 initial) |
-| Right-click → Transparent background | Enable the slider, initially at 45% transparency (opacity 55); uncheck to reset to opaque (0%) and disable the slider |
+| Right-click anywhere | Open a separate options window: avatar-size slider with five steps x1–x5 (the avatar's 64-point image renders at that many points per source texel, x2 initial) |
+| Right-click → Transparent background | Checked initially at 45% transparency (opacity 55), with the slider enabled; uncheck to reset to opaque (0%) and disable the slider |
 | Right-click → Background transparency | While checked, adjust background-only transparency: 0% opaque, 100% invisible; for this session only |
-| Right-click → No frame | Hide decorative frames and leave transparent 5 px separators; preserve the remaining background; unchecked by default, for this session only |
-| Right-click → Vertical / Horizontal | Select Vertical or Horizontal stacking; Horizontal is initial, for this session only |
+| Right-click → No frame | Hide decorative frames and leave transparent 5 px separators; preserve the remaining background; checked by default, for this session only |
+| Right-click → Vertical / Horizontal | Select Vertical or Horizontal stacking; Vertical is initial, for this session only |
 | Right-click → Exit | Close the window and shut down the owned receiver |
 
 The options use an independent, opaque native window, so all controls remain
@@ -50,7 +50,7 @@ and focus behavior depend on the window manager/compositor.
 
 The canvas derives from the avatar's rendered image, never the reverse: the
 slider step **x1–x5** is the points per source texel of the 64-point image
-(x3 = 192, the initial step), the composition adds the image's one source
+(x2 = 128, the initial step), the composition adds the image's one source
 separation row (so the composition is 64×step wide and 65×step tall), and the
 window adds only the margins that composition and the visible decorations
 actually need. **Horizontal** rows stack `avatar count` tiles; **Vertical**
@@ -85,8 +85,8 @@ uses the same clear-opening inset as a framed multi-avatar tile; **No frame**
 retains its borderless fit. Nonzero transparency hides frames, independently of that
 checkbox; changing transparency does not reset the **No frame** selection.
 The checkboxes, background transparency and stacking selection reset on restart.
-A single avatar now shows its frame by default, at 0% transparency with **No frame**
-unchecked. The waiting surface has no decorative frame before an image arrives and keeps
+Avatars start at **x2**, with **45% background transparency**, **No frame**
+checked and **Vertical** stacking; no decorative frame is shown by default. The waiting surface has no decorative frame before an image arrives and keeps
 its native 192×192 initial square at every slider step; only actual avatars or
 the clock fallback derive computed content sizes (the clock draws the
 composition of the chosen step). Physical dimensions also follow the OS display scale. Many
@@ -100,9 +100,9 @@ every edge snapped to the physical pixel grid: pixels always stay square, and
 the image may use larger margins rather than a fractional scale. Only surfaces
 smaller than 64×65 physical pixels fall back to a fractional contain fit.
 Nearest-neighbor filtering keeps texel edges sharp. The background is
-**opaque black by default**, with
-**Transparent background** unchecked and its slider disabled at 0% transparency.
-Checking it enables **Background transparency**, initially at 45% (opacity 55).
+**black at 45% transparency by default** (opacity 55), with
+**Transparent background** checked and its slider enabled.
+After unchecking it, checking it again enables **Background transparency** at 45% (opacity 55).
 The slider changes only the background; images, embedded labels and the options
 menu are not faded. Intermediate transparency retains the 8-pixel rounded background
 and image contour, including with a single avatar. The checkbox stays checked
@@ -134,21 +134,25 @@ state (or absent/unknown state value) restores the received pixels. An idle
 session's clock tile never hides active neighbors, honors the selected frame,
 and alternates its header every five seconds between the local date and its
 sender-resolved `/emote title` override or folder basename, via the existing
-`X-Emote-Project-Name` header. Names longer than 16 characters show the first 13
+`X-Emote-Project-Name` header. Display names are normalized to ASCII uppercase before counting/truncation;
+metadata and session identity keep their original case. Names longer than 16 characters show the first 13
 plus three static dots, never scrolling. IDs remain identity only; missing names
 and the global fallback keep the date. Renames refresh within the same animation
 tick without replacing texture handles or changing avatar layout. The compact
 bitmap alphabet is unchanged: unsupported characters reserve blank cells.
 
-Unframed clocks use the same 8-logical-pixel rounded contour as avatar cards,
-with a background bounded exactly by their snapped 64×65 composition (including
-the blank row above the image). The artwork, including the bottom path ends,
-is clipped to that contour. Background opacity still applies, with no underlay
-at zero. Mixed clock/avatar groups retain the ordinary uniform slots, insets,
-canvas and avatar geometry. When every visible tile is a clock, unframed groups
-omit the four-point card insets: at slider step `s`, `n` clocks request
-`(n×64s + (n−1)×5, 65s)` horizontally or `(64s, n×65s + (n−1)×5)` vertically.
-The selected scale never changes. Opaque clocks still use the selected decorative
+Unframed clocks use the same allocated card width and height as equivalent
+avatars, including the four-point insets in multi-tile groups and five-point
+separators. Backgrounds fill those cards, not just the snapped composition;
+rounded card backgrounds retain the existing opacity policy, with no underlay
+at zero. Clock artwork uses a complete image quad over the background: every
+source pixel, including the bottom path ends, remains visible without corner
+cropping. Avatar masking is unchanged. Ordinary, mixed and all-clock groups use
+the same canvas, insets and pixel multiplier. At slider step `s`, `n > 1`
+unframed tiles request `(n×(64s+8)+(n−1)×5, 65s+8)` horizontally or
+`(64s+8, n×(65s+8)+(n−1)×5)` vertically. Single unframed clocks and the global
+fallback use the full allocated surface for the background and the same 64×65
+image fit as a single unframed avatar. The selected scale never changes. Opaque clocks still use the selected decorative
 frame unless **No frame** is checked; the global fallback remains unframed.
 
 The surface repaints every 500ms while any clock is visible (walkers advance
