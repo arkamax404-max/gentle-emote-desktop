@@ -1,12 +1,18 @@
 //! Bounded session lifecycle state. Callers serialize mutations and notify after unlocking.
 use crate::receiver::Frame;
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
 
 pub const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Accepted frames and heartbeats are the only contact signals, so a clock tile
+/// stops presenting its project name well before the lifecycle lease expires.
+/// Strictly greater than this duration counts as silent; legacy senders have no
+/// pulse protocol and are never silent.
+pub const CLOCK_SILENCE_TIMEOUT: Duration = Duration::from_secs(15);
 pub const MAX_ACTIVE_SESSIONS: usize = 32;
 pub const MAX_KNOWN_SESSIONS: usize = 64;
 pub const MAX_RETIRED_STREAMS: usize = 16;
@@ -36,6 +42,18 @@ pub enum Event {
     Frame(Arc<Frame>, SessionState),
     Heartbeat,
     Close,
+}
+
+/// One visible clock tile: the snapshot to draw, the sender's project name as
+/// untouched metadata, and whether that name may still be presented.
+///
+/// The substitute title is presentation copy and belongs to the renderer; this
+/// type reports the silence rule only, so no copy lives in the domain.
+#[derive(Clone, Debug)]
+pub struct ClockTile {
+    pub snapshot: SessionSnapshot,
+    pub name: Option<String>,
+    pub stale: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -105,6 +123,8 @@ impl SessionRegistry {
     }
 
     /// Names and frames come from the same serialized registry observation.
+    /// This is raw metadata: no contact filtering happens here, so presentation
+    /// code reads `clock_tiles_at` instead.
     pub fn snapshots_with_names(&self) -> Vec<(SessionSnapshot, Option<String>)> {
         self.snapshots()
             .into_iter()
@@ -118,6 +138,34 @@ impl SessionRegistry {
                     None => self.legacy_project_name.clone(),
                 };
                 (snapshot, name)
+            })
+            .collect()
+    }
+
+    /// Clock presentation only: report silent sessions without changing metadata
+    /// or the independent 30-second lifecycle lease. Accepted frames and heartbeats
+    /// both count as contact; a replayed pulse renews neither.
+    pub fn clock_tiles_at(&self, now: Instant) -> Vec<ClockTile> {
+        // One pass over the sessions, so the rule stays linear in the visible tiles.
+        let silent: HashSet<&str> = self
+            .sessions
+            .iter()
+            .filter(|session| now.saturating_duration_since(session.seen) > CLOCK_SILENCE_TIMEOUT)
+            .map(|session| session.id.as_str())
+            .collect();
+        self.snapshots_with_names()
+            .into_iter()
+            .map(|(snapshot, name)| {
+                let stale = snapshot.state == SessionState::Clock
+                    && snapshot
+                        .session_id
+                        .as_deref()
+                        .is_some_and(|id| silent.contains(id));
+                ClockTile {
+                    snapshot,
+                    name,
+                    stale,
+                }
             })
             .collect()
     }
@@ -278,5 +326,70 @@ impl SessionRegistry {
             self.clock_after_close = false;
         }
         changed
+    }
+}
+
+#[cfg(test)]
+mod clock_title_tests {
+    use super::*;
+
+    #[test]
+    fn named_clock_reports_silence_without_losing_its_metadata() {
+        let mut registry = SessionRegistry::default();
+        let now = Instant::now();
+        let frame = Arc::new(Frame {
+            rgba: vec![0; 16384],
+        });
+        registry
+            .apply_named(
+                "clock",
+                "s",
+                1,
+                Event::Frame(frame.clone(), SessionState::Clock),
+                Some("ProjectAlpha".into()),
+                now,
+            )
+            .unwrap();
+        registry
+            .apply_named(
+                "normal",
+                "s",
+                1,
+                Event::Frame(frame.clone(), SessionState::Normal),
+                Some("Other".into()),
+                now,
+            )
+            .unwrap();
+        registry.publish_legacy_named(frame, SessionState::Clock, Some("Legacy".into()));
+        let titles = |registry: &SessionRegistry, at| {
+            registry
+                .clock_tiles_at(at)
+                .into_iter()
+                .map(|tile| (tile.name.unwrap_or_default(), tile.stale))
+                .collect::<Vec<_>>()
+        };
+        let fresh = |name: &str| (name.to_owned(), false);
+        let silent = |name: &str| (name.to_owned(), true);
+        assert_eq!(
+            titles(&registry, now + CLOCK_SILENCE_TIMEOUT),
+            [fresh("Legacy"), fresh("ProjectAlpha"), fresh("Other")]
+        );
+        let stale = now + CLOCK_SILENCE_TIMEOUT + Duration::from_nanos(1);
+        assert_eq!(
+            titles(&registry, stale),
+            [fresh("Legacy"), silent("ProjectAlpha"), fresh("Other")]
+        );
+        assert!(registry.snapshots().iter().all(|snapshot| snapshot.active));
+        assert_eq!(
+            registry.snapshots_with_names()[1].1.as_deref(),
+            Some("ProjectAlpha")
+        );
+        registry
+            .apply("clock", "s", 2, Event::Heartbeat, stale)
+            .unwrap();
+        assert_eq!(
+            titles(&registry, stale),
+            [fresh("Legacy"), fresh("ProjectAlpha"), fresh("Other")]
+        );
     }
 }

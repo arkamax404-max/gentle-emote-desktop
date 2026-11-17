@@ -1,5 +1,5 @@
-use gentle_emote_desktop::receiver::{BODY_TIMEOUT, MAX_BODY_BYTES, Receiver};
-use gentle_emote_desktop::sessions::SessionState;
+use gentle_emote_desktop::receiver::{BODY_TIMEOUT, LatestFrame, MAX_BODY_BYTES, Receiver};
+use gentle_emote_desktop::sessions::{SessionSnapshot, SessionState};
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
@@ -32,6 +32,18 @@ fn start() -> (Receiver, Arc<AtomicUsize>) {
     })
     .unwrap();
     (receiver, notifications)
+}
+
+/// Name-bearing metadata view for the wire tests. The production display accessor
+/// is the only name path, so these tests read it and project the metadata pair
+/// they assert instead of relying on a second API that could skip the silence rule.
+fn named(latest: &LatestFrame) -> Vec<(SessionSnapshot, Option<String>)> {
+    latest
+        .display_snapshot()
+        .0
+        .into_iter()
+        .map(|tile| (tile.snapshot, tile.name))
+        .collect()
 }
 
 fn connect(address: SocketAddr) -> TcpStream {
@@ -322,7 +334,7 @@ fn project_name_decodes_existing_producer_names_and_preserves_legacy() {
             204,
             "",
         );
-        let (snapshot, name) = latest.snapshots_with_names().remove(0);
+        let (snapshot, name) = named(&latest).remove(0);
         assert_eq!(name.as_deref(), Some(expected.as_str()));
         assert_eq!(snapshot.state, SessionState::Clock);
         assert!(Arc::ptr_eq(&snapshot.frame, &latest.get().unwrap()));
@@ -340,14 +352,14 @@ fn project_name_decodes_existing_producer_names_and_preserves_legacy() {
         204,
         "",
     );
-    assert!(latest.snapshots_with_names()[0].1.is_none());
+    assert!(named(&latest)[0].1.is_none());
     let legacy = format!("{HEADERS}X-Emote-Project-Name: Legacy%20folder\r\n");
     assert_response(
         &request(address, "POST", "/emote", &legacy, &png(64, 64, 91)),
         204,
         "",
     );
-    let (snapshot, name) = latest.snapshots_with_names().remove(0);
+    let (snapshot, name) = named(&latest).remove(0);
     assert!(snapshot.session_id.is_none());
     assert_eq!(name.as_deref(), Some("Legacy folder"));
     assert_response(
@@ -355,7 +367,7 @@ fn project_name_decodes_existing_producer_names_and_preserves_legacy() {
         204,
         "",
     );
-    assert!(latest.snapshots_with_names()[0].1.is_none());
+    assert!(named(&latest)[0].1.is_none());
     assert_eq!(count.load(Ordering::SeqCst), cases.len() + 3);
 }
 
@@ -415,7 +427,7 @@ fn project_name_rejection_preserves_pixels_state_name_notifications_and_sequence
             400,
             "invalid project name\n",
         );
-        let (snapshot, name) = latest.snapshots_with_names().remove(0);
+        let (snapshot, name) = named(&latest).remove(0);
         assert!(Arc::ptr_eq(&saved, &snapshot.frame));
         assert_eq!(snapshot.state, SessionState::Clock);
         assert!(snapshot.active);
@@ -453,10 +465,7 @@ fn project_name_rejection_preserves_pixels_state_name_notifications_and_sequence
         "expected a 64x64 PNG\n",
     );
     assert!(Arc::ptr_eq(&saved, &latest.get().unwrap()));
-    assert_eq!(
-        latest.snapshots_with_names()[0].1.as_deref(),
-        Some("before")
-    );
+    assert_eq!(named(&latest)[0].1.as_deref(), Some("before"));
     assert_eq!(count.load(Ordering::SeqCst), 1);
     assert_response(
         &request(
@@ -469,7 +478,7 @@ fn project_name_rejection_preserves_pixels_state_name_notifications_and_sequence
         204,
         "",
     );
-    assert_eq!(latest.snapshots_with_names()[0].1.as_deref(), Some("after"));
+    assert_eq!(named(&latest)[0].1.as_deref(), Some("after"));
     assert_eq!(latest.get().unwrap().rgba[0], 10);
     assert_eq!(count.load(Ordering::SeqCst), 2);
 }
@@ -517,7 +526,7 @@ fn project_name_delayed_body_cannot_rename_after_newer_lifecycle_or_takeover() {
             204,
             "",
         );
-        let saved = latest.snapshots_with_names().remove(0);
+        let saved = named(&latest).remove(0);
         assert_eq!(
             saved.1.as_deref(),
             Some(if path == "/emote" {
@@ -529,7 +538,7 @@ fn project_name_delayed_body_cannot_rename_after_newer_lifecycle_or_takeover() {
         let before = count.load(Ordering::SeqCst);
         slow.write_all(&bytes[1..]).unwrap();
         assert_response(&response(slow), 204, "");
-        let after = latest.snapshots_with_names().remove(0);
+        let after = named(&latest).remove(0);
         assert!(Arc::ptr_eq(&saved.0.frame, &after.0.frame));
         assert_eq!(saved.0.active, after.0.active);
         assert_eq!(saved.0.state, after.0.state);
@@ -554,7 +563,7 @@ fn project_name_capacity_rejection_and_unknown_heartbeat_leave_names_unchanged()
         204,
         "",
     );
-    assert!(latest.snapshots_with_names().is_empty());
+    assert!(named(&latest).is_empty());
     assert_eq!(count.load(Ordering::SeqCst), 0);
     for i in 0..32 {
         let id = i.to_string();
@@ -570,7 +579,7 @@ fn project_name_capacity_rejection_and_unknown_heartbeat_leave_names_unchanged()
             "",
         );
     }
-    let saved = latest.snapshots_with_names();
+    let saved = named(&latest);
     assert_response(
         &request(
             address,
@@ -582,7 +591,7 @@ fn project_name_capacity_rejection_and_unknown_heartbeat_leave_names_unchanged()
         429,
         "session limit reached\n",
     );
-    for (i, (snapshot, name)) in latest.snapshots_with_names().iter().enumerate() {
+    for (i, (snapshot, name)) in named(&latest).iter().enumerate() {
         assert!(Arc::ptr_eq(&saved[i].0.frame, &snapshot.frame));
         assert_eq!(name.as_deref(), Some(format!("folder{i}").as_str()));
     }
@@ -609,10 +618,7 @@ fn project_name_capacity_rejection_and_unknown_heartbeat_leave_names_unchanged()
         204,
         "",
     );
-    assert_eq!(
-        latest.snapshots_with_names().last().unwrap().1.as_deref(),
-        Some("extra")
-    );
+    assert_eq!(named(&latest).last().unwrap().1.as_deref(), Some("extra"));
     assert_eq!(count.load(Ordering::SeqCst), 34);
 }
 

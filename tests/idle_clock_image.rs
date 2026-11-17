@@ -1,5 +1,7 @@
 use chrono::{DateTime, TimeDelta};
-use gentle_emote_desktop::idle_clock_image::{animation_step, render, render_for_session};
+use gentle_emote_desktop::idle_clock_image::{
+    STALE_TITLE, animation_step, render, render_for_session,
+};
 
 const GOLDEN: &str = include_str!("fixtures/idle-clock-golden.json");
 
@@ -306,4 +308,20 @@ fn internal_clock_uses_transparent_gaps_with_opaque_ink() {
         pixels.iter().all(|p| p[3] == 0 || p[3] == 255),
         "alpha must stay binary for unpremultiplied desktop compositing"
     );
+}
+
+#[test]
+fn stale_title_keeps_the_documented_copy_and_changes_only_the_header() {
+    let now = at("1970-01-01T00:00:05+00:00");
+    assert_eq!(
+        STALE_TITLE, "*NO SESSION*",
+        "docs/protocol.md quotes this exact copy"
+    );
+    let pixels = render_for_session(now, STALE_TITLE).rgba;
+    assert_ne!(
+        header(&pixels),
+        header(&render_for_session(now, " NO SESSION ").rgba),
+        "the asterisks are drawn, not dropped"
+    );
+    assert_only_header_changes(now, STALE_TITLE);
 }
