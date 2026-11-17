@@ -14,8 +14,9 @@ session available, run from this directory:
 cargo run
 ```
 
-If Cargo is not on PATH on the development host, use
-`/Users/santiagoperez/.cargo/bin/cargo` in place of `cargo`. This project does not
+If Cargo is not on PATH on the development host, use the full path to the
+installed `cargo` binary in place of `cargo` (for rustup installations this is
+typically `~/.cargo/bin/cargo`). This project does not
 change PATH, install system packages, or configure the sender globally.
 Target `http://127.0.0.1:8001/emote`; see the [wire protocol](docs/protocol.md).
 The local Gentle Emote fork has no sender CLI; a bounded integration used its
