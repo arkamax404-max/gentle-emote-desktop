@@ -23,8 +23,9 @@ Main/native event loop: EmoteApp::show → atomic display_snapshot()
 egui + Glow → frameless native window; opaque black by default, optional transparency
 ```
 
-There is no pending-frame queue, avatar polling timer, persistence layer, or second
-metadata display. Sender labels are already part of the pixels. Only clock mode
+There is no pending-frame queue, avatar polling timer, general settings persistence, or second
+metadata display. The native entry point alone opts in to the tiny dedicated background
+RGB store described below. Sender labels are already part of the pixels. Only clock mode
 schedules a 500ms GUI repaint, reading `chrono::Local::now()` once for local
 `HH:MM:SS` and the date/session header. Chrono uses the
 system time zone, including daylight-saving rules. The
@@ -44,6 +45,54 @@ validation order, resource limits, and the local trust boundary.
 
 [`src/lib.rs`](../src/lib.rs) exposes the receiver and app modules so the binary,
 integration tests, and smoke example use the same implementation.
+
+## Session-local card presentation
+
+`src/card_presentation.rs` is private desktop policy between the atomic display
+snapshot and texture/layout work. `CardId::Session(String)`, `Legacy`, and
+`GlobalFallback` are distinct identities, independent of labels and indices.
+The app reconciles first-seen order, appends newly discovered cards, clears an
+identity's dismissal only on ordinary images, then filters and orders tiles.
+Moves swap visible neighbors in that local order, leaving hidden cards' positions
+available for restoration. No registry event, lease, stream or receiver API changes.
+
+Fallback suppression is separate from legacy suppression: while the underlying
+fallback remains active its retained snapshot cannot clear dismissal or leak back
+as an avatar. An inactive fallback resets only fallback suppression. The visible
+projection drives drawing, clock cache membership/animation and content sizing;
+when no cards remain it uses the native initial waiting surface. The existing
+undismissed global fallback retains the previous avatar cache compatibility.
+Clock cache keys also distinguish the global fallback from the legacy singleton.
+
+While painting, the app records actual allocated card rectangles (packed regions
+excluding five-point gaps, decorative artwork bounds for framed tiles). Secondary
+click stores the matching identity. Each menu pass resolves it against the current
+visible projection before enabling neighbor moves or offering **Close clock**.
+Disappeared identities cannot retarget a neighbor, and a target that returns to
+normal loses its close action. Global controls remain global; primary drag retains
+the original full-surface native move target. All order/dismissal state belongs to
+`EmoteApp` only and never enters the independently persisted RGB store.
+
+## Dedicated user-global background RGB
+
+`src/background_color.rs` is a std-only store, separate from the receiver and
+sender configuration. `main` resolves an absolute platform user-config root and
+opts in through `EmoteApp::with_background_color_path`; ordinary `EmoteApp::new`
+never reads environment/configuration or touches the filesystem. The builder loads
+only RGB, leaving all other app defaults intact. Windows uses APPDATA, Linux uses
+XDG_CONFIG_HOME (or HOME/.config when unset), and macOS uses HOME/Library/Application
+Support, each with `gentle-emote-desktop/background-color.txt`. Invalid/empty/relative
+roots disable persistence rather than using the project directory.
+
+The codec accepts only lowercase `#rrggbb`, optionally followed by one LF. Loading
+reads at most nine bytes and returns black for missing, invalid, oversized or
+unreadable files, without writing a repair. The actual picker color-changed branch
+updates live RGB and immediately calls the store only when RGB differs. Save creates
+the parent directory as needed and overwrites only that file; errors are nonfatal
+and leave live RGB unchanged. This is not an atomic-replace guarantee; concurrent
+instances are last-writer-wins. There is no Drop save, egui persistence, or storage
+of opacity, framing, size, orientation, receiver, sender or LED settings. Tests inject
+absolute paths under session-owned OS temp directories, not real user configuration.
 
 ## Ownership makes shutdown explicit
 
@@ -108,7 +157,8 @@ explicit close of the final active session instead displays the local clock when
 no legacy avatar remains. Initial Waiting and a delayed close after timeout do
 not enable the clock. A new or reactivated session replaces either presentation,
 rather than appending to a dead placeholder. Legacy traffic is a nonexpiring singleton
-ordered before session keys. The GUI uses registry ordering, never HashMap order.
+ordered before session keys in registry snapshots. The GUI starts with that order,
+then applies its session-local presentation order, never HashMap iteration order.
 
 A session whose latest frame carries `X-Emote-State: clock` renders the internal
 pixel clock (`idle_clock_image`, ported 1:1 from the canonical Lemmings renderer)

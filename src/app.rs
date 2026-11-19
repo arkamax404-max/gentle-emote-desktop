@@ -1,4 +1,5 @@
 //! Native presentation: the network owns publication; this app owns GPU resources.
+use crate::card_presentation::{CardId, CardPresentation};
 use crate::idle_clock_image::{self, ANIMATION_PERIOD_MS};
 use crate::receiver::{Frame, LatestFrame, Receiver};
 use crate::sessions::{ClockTile, SessionState};
@@ -201,6 +202,7 @@ fn paint_clock_image(
     image: egui::Rect,
     card: egui::Rect,
     opacity: u8,
+    rgb: [u8; 3],
     radius: f32,
 ) {
     if !image.is_positive() {
@@ -208,7 +210,11 @@ fn paint_clock_image(
     }
     if opacity > 0 {
         let alpha = ((u16::from(opacity) * 255 + 50) / 100) as u8;
-        painter.rect_filled(card, radius, egui::Color32::from_black_alpha(alpha));
+        painter.rect_filled(
+            card,
+            radius,
+            egui::Color32::from_rgba_unmultiplied(rgb[0], rgb[1], rgb[2], alpha),
+        );
     }
     painter.image(
         texture,
@@ -238,7 +244,9 @@ pub struct EmoteApp {
     latest: LatestFrame,
     textures: HashMap<Option<String>, AvatarTexture>,
     frame_texture: Option<TextureHandle>,
-    clocks: HashMap<Option<String>, ClockTexture>,
+    clocks: HashMap<CardId, ClockTexture>,
+    presentation: CardPresentation,
+    menu_target: Option<CardId>,
     /// Avatar-size slider step x1..x5: the avatar's 64-point image renders at
     /// that many points per source texel, and the canvas derives from that
     /// composition (image plus its one separation row) plus the visible
@@ -246,6 +254,9 @@ pub struct EmoteApp {
     size_step: u8,
     applied_size: Vec2,
     background_opacity: u8,
+    background_color: [u8; 3],
+    background_color_path: Option<std::path::PathBuf>,
+    background_color_expanded: bool,
     transparent_background: bool,
     no_frame: bool,
     vertical_stacking: bool,
@@ -264,9 +275,14 @@ impl EmoteApp {
             textures: HashMap::new(),
             frame_texture: None,
             clocks: HashMap::new(),
+            presentation: CardPresentation::default(),
+            menu_target: None,
             size_step: 2,
             applied_size: Vec2::splat(192.0),
             background_opacity: 55,
+            background_color: [0; 3],
+            background_color_path: None,
+            background_color_expanded: false,
             transparent_background: true,
             no_frame: true,
             vertical_stacking: true,
@@ -277,6 +293,15 @@ impl EmoteApp {
             #[cfg(target_os = "windows")]
             applied_native_shadow: None,
         }
+    }
+
+    /// Opt in to the dedicated RGB store; ordinary `new` performs no filesystem I/O.
+    pub fn with_background_color_path(mut self, path: std::path::PathBuf) -> Self {
+        if path.is_absolute() {
+            self.background_color = crate::background_color::load(&path);
+            self.background_color_path = Some(path);
+        }
+        self
     }
 
     #[cfg(any(target_os = "windows", test))]
@@ -296,17 +321,27 @@ impl EmoteApp {
         // One atomic ordered snapshot; never hold the registry lock during GPU work.
         // Inactive final avatars intentionally use the same cache entry and pixels.
         let (snapshots, show_clock) = self.latest.display_snapshot();
+        let (snapshots, show_clock) = self.presentation.visible(snapshots, show_clock);
+        let visible_cards: Vec<_> = if show_clock {
+            vec![(CardId::GlobalFallback, true)]
+        } else {
+            snapshots
+                .iter()
+                .map(|tile| (CardId::of(tile), tile.snapshot.state == SessionState::Clock))
+                .collect()
+        };
+        let mut card_hits = Vec::new();
         // Cache only visible clock keys, bounded by the registry's snapshot cap.
         // IDs remain cache identity, never display-name fallbacks. The global
         // clock has no name; legacy frames may supply one without an ID. The
         // silent-session copy is chosen here, not in the session registry.
         let clock_inputs: Vec<_> = if show_clock {
-            vec![(None, None)]
+            vec![(CardId::GlobalFallback, None)]
         } else {
             snapshots
                 .iter()
                 .filter(|tile| tile.snapshot.state == SessionState::Clock)
-                .map(|tile| (tile.snapshot.session_id.clone(), clock_header(tile)))
+                .map(|tile| (CardId::of(tile), clock_header(tile)))
                 .collect()
         };
         let any_clock = !clock_inputs.is_empty();
@@ -442,7 +477,8 @@ impl EmoteApp {
         };
         if self.background_opacity > 0 {
             let alpha = ((u16::from(self.background_opacity) * 255 + 50) / 100) as u8;
-            let fill = egui::Color32::from_black_alpha(alpha);
+            let [r, g, b] = self.background_color;
+            let fill = egui::Color32::from_rgba_unmultiplied(r, g, b, alpha);
             if let Some((span, gap)) = packed_layout {
                 for index in 0..snapshots.len() {
                     ui.painter()
@@ -457,7 +493,11 @@ impl EmoteApp {
             // Idle sessions render the internal clock in their own tile while
             // ordinary neighbors keep their received pixels.
             let texture = if snapshot.state == SessionState::Clock {
-                &self.clocks[&snapshot.session_id].texture
+                let key = snapshot
+                    .session_id
+                    .clone()
+                    .map_or(CardId::Legacy, CardId::Session);
+                &self.clocks[&key].texture
             } else {
                 &self.textures[&snapshot.session_id].texture
             };
@@ -477,6 +517,7 @@ impl EmoteApp {
                 )
             };
             let rect = egui::Rect::from_min_size(rect.min + offset, size);
+            let hit = packed_layout.map_or(rect, |(span, gap)| card_rect(span, gap, index));
             let (rect, decoration) = if let Some((span, gap)) = packed_layout {
                 let card = card_rect(span, gap, index);
                 // Clock and avatar slots share the same fit, even at DPI.
@@ -502,6 +543,11 @@ impl EmoteApp {
             } else {
                 (rect, None)
             };
+            // Framed cards target the artwork, not the unused tile margins.
+            card_hits.push((
+                visible_cards[index].0.clone(),
+                decoration.map_or(hit, |(_, border)| border),
+            ));
             // Keep one source row of padding above the complete image, scaled
             // in whole physical pixels with snapped edges so NEAREST keeps
             // square pixels at any display scale factor.
@@ -516,6 +562,7 @@ impl EmoteApp {
                     image_rect,
                     rect,
                     0, // The shared allocated-card background is already painted.
+                    self.background_color,
                     radius,
                 );
             } else if let Some((span, gap)) = packed_layout {
@@ -550,7 +597,8 @@ impl EmoteApp {
         if show_clock {
             // Global fallback after the final explicit close: one internal
             // clock, no decorative frame (same close behavior as before).
-            let texture = &self.clocks[&None].texture;
+            card_hits.push((CardId::GlobalFallback, rect));
+            let texture = &self.clocks[&CardId::GlobalFallback].texture;
             let (_, image_rect) = snapped_physical_image_fit(rect, ui.ctx().pixels_per_point());
             paint_clock_image(
                 ui.painter(),
@@ -558,6 +606,7 @@ impl EmoteApp {
                 image_rect,
                 rect,
                 self.background_opacity,
+                self.background_color,
                 radius,
             );
         } else if snapshots.is_empty() {
@@ -579,6 +628,12 @@ impl EmoteApp {
         let menu_id = egui::ViewportId::from_hash_of("emote-options");
         let opening = response.secondary_clicked();
         if opening {
+            self.menu_target = response.interact_pointer_pos().and_then(|pos| {
+                card_hits
+                    .iter()
+                    .find(|(_, rect)| rect.contains(pos))
+                    .map(|(id, _)| id.clone())
+            });
             self.menu_open = true;
             self.menu_had_focus = false;
             self.menu_position = ctx.input(|input| {
@@ -616,6 +671,46 @@ impl EmoteApp {
                     .rect_filled(ui.max_rect(), 0.0, ui.visuals().window_fill());
                 let mut content_width = 0.0_f32;
                 let content = egui::Frame::new().inner_margin(8).show(ui, |ui| {
+                    // Resolve the stored identity again on each pass: indices and
+                    // clock state may change while the native child stays open.
+                    if let Some((index, (_, clock))) =
+                        self.menu_target.as_ref().and_then(|target| {
+                            visible_cards
+                                .iter()
+                                .enumerate()
+                                .find(|(_, (id, _))| id == target)
+                        })
+                    {
+                        let (previous, next) = if self.vertical_stacking {
+                            ("Move up", "Move down")
+                        } else {
+                            ("Move left", "Move right")
+                        };
+                        for (label, neighbor) in [
+                            (previous, index.checked_sub(1)),
+                            (next, (index + 1 < visible_cards.len()).then_some(index + 1)),
+                        ] {
+                            let action =
+                                ui.add_enabled(neighbor.is_some(), egui::Button::new(label));
+                            content_width = content_width.max(action.rect.width());
+                            if action.clicked() {
+                                self.presentation.move_card(
+                                    &visible_cards[index].0,
+                                    &visible_cards[neighbor.unwrap()].0,
+                                );
+                                self.menu_open = false;
+                            }
+                        }
+                        if *clock {
+                            let close = ui.button("Close clock");
+                            content_width = content_width.max(close.rect.width());
+                            if close.clicked() {
+                                self.presentation.dismiss(visible_cards[index].0.clone());
+                                self.menu_open = false;
+                            }
+                        }
+                        ui.separator();
+                    }
                     let size_caption = ui.label("Avatar size");
                     content_width = content_width.max(size_caption.rect.width());
                     // Five whole-integer steps over 64-point content sides;
@@ -651,6 +746,34 @@ impl EmoteApp {
                     if slider.changed() {
                         self.background_opacity = 100 - percentage;
                         ctx.request_repaint();
+                    }
+                    // Keep the native picker inside the content-sized options
+                    // viewport: a color-button popup would be clipped by this
+                    // compact window. Expansion grows and shrinks with its UI.
+                    let color_toggle =
+                        ui.toggle_value(&mut self.background_color_expanded, "Background color");
+                    content_width = content_width.max(color_toggle.rect.width());
+                    if self.background_color_expanded {
+                        let picker = ui.scope(|ui| {
+                            let [r, g, b] = self.background_color;
+                            let mut color = egui::Color32::from_rgb(r, g, b);
+                            if egui::color_picker::color_picker_color32(
+                                ui,
+                                &mut color,
+                                egui::color_picker::Alpha::Opaque,
+                            ) {
+                                let rgb = [color.r(), color.g(), color.b()];
+                                if rgb != self.background_color {
+                                    self.background_color = rgb;
+                                    if let Some(path) = &self.background_color_path {
+                                        // Persistence errors never discard the live selection.
+                                        let _ = crate::background_color::save(path, rgb);
+                                    }
+                                    ctx.request_repaint();
+                                }
+                            }
+                        });
+                        content_width = content_width.max(picker.response.rect.width());
                     }
                     let no_frame = ui.checkbox(&mut self.no_frame, "No frame");
                     content_width = content_width.max(no_frame.rect.width());

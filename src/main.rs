@@ -16,7 +16,11 @@ fn main() -> eframe::Result {
             let receiver = Receiver::start(move || ctx.request_repaint())?;
             // App creation propagates bind errors to run_native and main exits
             // nonzero. Window/backend errors follow the same path; no port fallback.
-            Ok(Box::new(EmoteApp::new(receiver)))
+            let mut app = EmoteApp::new(receiver);
+            if let Some(path) = gentle_emote_desktop::background_color::global_path() {
+                app = app.with_background_color_path(path);
+            }
+            Ok(Box::new(app))
         }),
     )
 }

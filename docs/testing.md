@@ -42,8 +42,10 @@ Linux builds need suitable graphics/toolchain libraries.
 
 Receiver and headless window tests bind `127.0.0.1:0`: the OS chooses an
 **ephemeral port**, and clients use `local_addr()` to discover it. They do not
-need production port 8001 or an existing sender. They create no scratch
-directories. Window tests inspect egui outputs without a native event loop;
+need production port 8001 or an existing sender. Persistence tests create isolated
+OS-temp directories and remove them in teardown; they never read/write real user
+configuration or mutate process environment/cwd. Other socket/window checks need
+no scratch directories. Window tests inspect egui outputs without a native event loop;
 asserting `StartDrag` or `AlwaysOnTop` does not prove the OS honored the request.
 Likewise, transparent viewport options, renderer clear values, and omitted black
 paint do not prove native desktop compositing works. The private shadow-policy
@@ -96,6 +98,125 @@ cargo test --test receiver
 cargo test --test window
 cargo test --lib app::tests::native_shadow_policy_follows_background_toggle_round_trip -- --exact
 ```
+
+## Desktop background RGB selector and user-global persistence
+
+**Background color** expands egui's opaque RGB picker inside the existing native
+options window. The menu measures the expanded controls and shrinks when they
+are collapsed; there is no nested color popup clipped to the compact viewport.
+Black remains the fallback. Ordinary filesystem-free `EmoteApp::new` instances
+still reset color; the production entry point explicitly enables the dedicated
+user-global RGB store, so its selected color survives restarts and projects. The existing
+transparency checkbox and slider apply independently to the selected RGB. This
+setting affects only desktop underlays, not received pixels, sender settings or
+HTML/serial LED displays.
+
+Two `background_color_*` public-menu regressions edit the actual R/G/B numeric
+controls to RGB(32,128,224). They inspect unmultiplied-to-premultiplied egui fill
+colors at default/zero/half/full opacity, checkbox round trips, waiting, mixed
+avatar/clock cards on both axes, a single session clock and the global fallback.
+They check menu expansion/collapse and label bounds, unchanged root commands,
+clear alpha, frames, image geometry and white mesh tint, cached texture reuse,
+rounded individual cards and five-point clear separators. The existing upload
+regression additionally changes RGB after uploading opaque black, partial-alpha
+and transparent source pixels and requires the exact same image mesh with no
+texture reupload. Existing default-black and native-shadow regressions remain.
+
+The initial session-only selector milestone below is historical; persistence is
+now opt-in at the app API and enabled by the production entry point. The new
+`tests/background_color.rs` covers strict lowercase `#rrggbb` with optional single
+LF, nested-directory save/load round trips, missing/malformed/oversized/unreadable
+black fallbacks without repair, save errors and absolute-root policy. Two new
+`background_color_persistence_*` public-menu tests cover immediate save before
+Drop, reconstruction with only RGB restored and unrelated settings at defaults,
+unchanged unrelated files, ordinary constructor isolation and nonfatal save failure.
+The file overwrite is not claimed atomic, nor are native restart or all-platform
+execution claimed by headless tests. No real user config is touched in tests.
+
+Observed RED: `cargo test --offline --config build.incremental=false --test window
+background_color -- --nocapture` exited 101 with both new tests failing at
+`menu option must be painted: Background color`. After implementation it exited
+0 with 2 passed, 0 failed. The strengthened final focused run again passed both;
+`cargo test --offline --config build.incremental=false --test window
+upload_only_on_new_snapshot_and_use_nearest_filter -- --exact` passed 1/1.
+Disabling incremental compilation was necessary because ordinary `cargo test`
+initially reused an outdated executable (0 matching tests, 26 filtered out)
+instead of compiling the current source (44 window tests).
+
+The combined focused-plus-full-suite attempt reached its 30-second foreground
+limit during the window target. Before timeout, the suite reported 3 library,
+9 clock-image, 25 receiver and 9 session tests passed; main/startup had no tests
+on this Windows host. The window target began and reported passing tests but
+no final count. This is **not a complete suite pass**; the timed-out command was
+not retried. No background-job execution tool was available to this worker.
+A subsequent targeted preservation check,
+`cargo test --offline --config build.incremental=false --test window
+small_surface_menu_has_independent_viewport_and_complete_controls -- --exact`,
+exited 101 (0 passed, 1 failed) at `tests/window.rs:1650` with
+`menu has unnecessary horizontal space`. Disabling the color header's
+full-available-width frame in a scoped style was one correction attempt; the
+same check still failed. That chained command stopped before rerunning the
+RGB/upload checks.
+
+The subsequently authorized bounded correction replaced the collapsing header
+with a naturally sized **Background color** toggle and a session-local expanded
+flag, initially false. Only the actual toggle and visible picker content now
+contribute to measured width; no scoped header style override remains. The
+unchanged compact-menu regression command above then exited 0 (1 passed,
+0 failed). The final RGB command exited 0 (2 passed, 0 failed), and the final
+upload regression command exited 0 (1 passed, 0 failed).
+`rustfmt --edition 2024 --config skip_children=true src/app.rs tests/window.rs`
+also exited 0, formatting only those two allowed files.
+
+The earlier full-suite timeout remains a failed/incomplete verification result;
+the suite was not retried or moved to background execution. Native human checks
+of the picker, compositor colors, shadow policy and screen placement remain
+outstanding, as do full-suite completion and lint verification.
+
+## Session-local card order and clock dismissal
+
+The `card_*` public HTTP/headless-egui regressions in `tests/window.rs` exercise
+the actual secondary-click target and native child buttons. Both axes cover moves,
+boundary no-ops, independently targeted identities, update/heartbeat stability and
+new-card append. Clock cases cover ordinary-card close absence, preserving a normal
+neighbor, repeated clock/heartbeat suppression, normal-image restoration, last-card
+Waiting for session and legacy clocks, and global fallback suppression separately
+from legacy None. Stale-menu clicks cannot close a returned avatar or move/close
+a replacement. Separator and unused framed-margin clicks offer only global controls;
+actual-card controls fit the compact native menu without weakening its width bound.
+Existing primary drag, menu dismissal/Exit, image/clock geometry and RGB persistence
+checks remain separate preservation evidence.
+
+The initial focused run with the two new behavior tests exited 101: **Move up**
+and **Close clock** were missing (2 failed, 2 existing contour tests passed).
+After implementation that run passed 4/4. After adding the remaining rule-named
+cases the focused filter passed 8/8 (six card tests and two existing contour tests).
+A strengthened legacy-append check initially failed (7 passed, 1 failed): it sent
+both new identities before the next UI observation, so their simultaneous discovery
+correctly used registry snapshot order. Adding the intended UI discovery pass
+between those arrivals corrected the fixture; the next run passed 8/8. The final
+focused run, also asserting the exact 192×192 waiting resize, passed 8/8.
+Changed-scope preservation runs passed compact-clock 3/3, session-clock 6/6,
+background-color UI 4/4, menu 6/6, primary drag 1/1 and neighboring-cache lifecycle
+1/1, plus library 3/3 and isolated background-color store 3/3. All used offline,
+nonincremental Cargo and `--target-dir target/persistence-check`.
+These are headless UI dispatch/layout checks, not native human visual acceptance.
+The running production desktop was not closed or replaced. The earlier full-suite
+timeout was not retried, and no native launch or real global configuration was used.
+
+## Native acceptance and integration evidence
+
+After the focused checks above, the parent built the current desktop successfully
+with `cargo build --offline --config build.incremental=false --target-dir
+ target/persistence-check` (exit 0), replaced the earlier test instance, and
+confirmed the new process was responding. The user exercised the native window
+and reported `va perfecto`, then authorized integration and pushing to main.
+This provides human acceptance of the tested card controls and background-color
+experience, not proof of every manual checklist item, cross-platform behavior,
+or a complete test-suite pass. The independent verifier reported 15 passing
+checks using copied focused test executables and independently compiled source
+probes; it did not claim a fresh full Cargo rebuild or full-suite completion.
+The earlier full-suite timeout remains outstanding historical verification.
 
 ## Independent options window and transparent frames
 
@@ -689,6 +810,14 @@ Use this checklist to gather missing evidence, not as a record of completed work
   PNG pixels reveal it, and partial-alpha pixels blend with it. Confirm opaque
   black PNG pixels, including the sender's bottom gap, remain black; the full
   image and nearest-neighbor edges must remain unchanged.
+- [ ] Open **Background color**, choose a nonblack RGB color, and collapse it.
+  Confirm all picker controls fit the independent options window, which shrinks
+  again after collapse. Check waiting, avatars, session clocks and the final-close
+  fallback at opaque, partial and zero opacity; separators stay clear. Opaque
+  black source pixels remain black, and source alpha/clock artwork stay unchanged.
+  Restart (also from a different project directory) and confirm the selected RGB
+  returns with the existing 45% transparency, x2, No frame and Vertical defaults.
+  Do not change sender or HTML/serial LED configuration for this check.
 - [ ] On Windows, inspect the transparent window against a contrasting desktop:
   confirm the native rounded shadow/thin perimeter is absent, then toggle back
   to opaque and confirm its previous shadow policy returns. This requires a

@@ -1628,6 +1628,7 @@ fn small_surface_menu_has_independent_viewport_and_complete_controls() {
             "x3",
             "Transparent background",
             "Background transparency",
+            "Background color",
             "No frame",
             "Vertical / Horizontal",
             "Horizontal",
@@ -2867,6 +2868,321 @@ fn set_size_step(ctx: &egui::Context, app: &mut EmoteApp, step_index: u8) -> Vec
     commands
 }
 
+// Card actions use the same public surface and native-child event adapter as
+// global options, but retain the exact click position on the default test surface.
+fn card_menu(ctx: &egui::Context, app: &mut EmoteApp, p: Pos2) {
+    step(ctx, app, vec![]);
+    step(
+        ctx,
+        app,
+        vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Secondary, true),
+        ],
+    );
+    step(ctx, app, vec![button(p, PointerButton::Secondary, false)]);
+    step(ctx, app, vec![]);
+}
+
+fn painted_label(output: &egui::FullOutput, label: &str) -> Option<Pos2> {
+    output.shapes.iter().find_map(|s| match &s.shape {
+        egui::Shape::Text(t) if t.galley.text() == label => Some(t.pos + Vec2::splat(4.0)),
+        _ => None,
+    })
+}
+
+fn card_action(ctx: &egui::Context, app: &mut EmoteApp, label: &str) -> Output {
+    let p = painted_label(&menu::take(), label)
+        .unwrap_or_else(|| panic!("missing card action: {label}"));
+    menu::events(vec![
+        Event::PointerMoved(p),
+        button(p, PointerButton::Primary, true),
+    ]);
+    step(ctx, app, vec![]);
+    menu::events(vec![button(p, PointerButton::Primary, false)]);
+    step(ctx, app, vec![]);
+    step(ctx, app, vec![])
+}
+
+fn avatar_names(output: &Output) -> Vec<String> {
+    avatars(output)
+        .iter()
+        .map(|(id, _)| output.1[id].clone())
+        .collect()
+}
+
+#[test]
+fn card_reorder_targets_identity_survives_updates_and_appends_new_cards() {
+    for vertical in [true, false] {
+        let (ctx, mut app, address) = setup_defaults();
+        if !vertical {
+            select_menu_option(&ctx, &mut app, "Horizontal");
+        }
+        for id in ["a", "b"] {
+            session_request(address, id, 1, "emote", 42);
+        }
+        let p = if vertical {
+            Pos2::new(50.0, 150.0)
+        } else {
+            Pos2::new(150.0, 50.0)
+        };
+        card_menu(&ctx, &mut app, p);
+        let (previous, next) = if vertical {
+            ("Move up", "Move down")
+        } else {
+            ("Move left", "Move right")
+        };
+        card_action(&ctx, &mut app, previous);
+        assert_eq!(
+            avatar_names(&step(&ctx, &mut app, vec![])),
+            ["emote-session:b", "emote-session:a"]
+        );
+        session_request_state(address, "a", 2, "emote", 84, Some("clock"));
+        session_request(address, "b", 2, "emote/heartbeat", 0);
+        let mixed = step(&ctx, &mut app, vec![]);
+        let normal = avatars(&mixed)[0].1;
+        let clock = clock_meshes(&mixed)[0].1;
+        assert!(if vertical {
+            normal.bottom() < clock.top()
+        } else {
+            normal.right() < clock.left()
+        });
+        drop(mixed);
+        session_request(address, "a", 3, "emote", 84);
+        session_request(address, "c", 1, "emote", 126);
+        step(&ctx, &mut app, vec![]); // Discover c before legacy arrives.
+        session_request(address, "", 1, "emote", 168);
+        assert_eq!(
+            avatar_names(&step(&ctx, &mut app, vec![])),
+            ["emote-session:b", "emote-session:a", "emote-session:c", "emote"]
+        );
+        card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+        card_action(&ctx, &mut app, previous); // disabled at the first boundary
+        assert_eq!(
+            avatar_names(&step(&ctx, &mut app, vec![]))[0],
+            "emote-session:b"
+        );
+        card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+        card_action(&ctx, &mut app, next);
+        assert_eq!(
+            avatar_names(&step(&ctx, &mut app, vec![])),
+            ["emote-session:a", "emote-session:b", "emote-session:c", "emote"]
+        );
+    }
+}
+
+#[test]
+fn card_clock_close_is_local_survives_clocks_and_restores_normal_image() {
+    let (ctx, mut app, address) = setup_defaults();
+    session_request_state(address, "a", 1, "emote", 42, Some("clock"));
+    session_request(address, "b", 1, "emote", 84);
+    card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+    card_action(&ctx, &mut app, "Close clock");
+    let hidden = step(&ctx, &mut app, vec![]);
+    assert!(clock_meshes(&hidden).is_empty());
+    assert_eq!(avatar_names(&hidden), ["emote-session:b"]);
+    drop(hidden);
+    session_request_state(address, "a", 2, "emote", 42, Some("clock"));
+    session_request(address, "a", 3, "emote/heartbeat", 0);
+    assert!(clock_meshes(&step(&ctx, &mut app, vec![])).is_empty());
+    session_request(address, "a", 4, "emote", 126);
+    assert_eq!(
+        avatar_names(&step(&ctx, &mut app, vec![])),
+        ["emote-session:a", "emote-session:b"]
+    );
+    card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+    assert!(painted_label(&menu::take(), "Close clock").is_none());
+}
+
+fn assert_waiting(output: &Output) {
+    assert!(avatars(output).is_empty());
+    assert!(clock_meshes(output).is_empty());
+    assert!(frames(output).is_empty());
+    assert!(output.shapes.iter().any(|s| matches!(&s.shape,
+        egui::Shape::Text(t) if t.galley.text().starts_with("Waiting for emote"))));
+    assert!(
+        !output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&ViewportCommand::Close)
+    );
+}
+
+#[test]
+fn card_last_clock_waits_for_normal_for_session_and_legacy() {
+    for id in ["a", ""] {
+        let (ctx, mut app, address) = setup_defaults();
+        session_request_state(address, id, 1, "emote", 42, Some("clock"));
+        card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+        let closing = card_action(&ctx, &mut app, "Close clock");
+        assert_eq!(
+            closing.viewport_output[&egui::ViewportId::ROOT].commands,
+            vec![ViewportCommand::InnerSize(Vec2::splat(192.0))]
+        );
+        drop(closing);
+        assert_waiting(&step(&ctx, &mut app, vec![]));
+        session_request_state(address, id, 2, "emote", 84, Some("clock"));
+        if !id.is_empty() {
+            session_request(address, id, 3, "emote/heartbeat", 0);
+        }
+        let waiting = compact_surface(&ctx, &mut app, Vec2::splat(192.0));
+        assert_waiting(&waiting);
+        assert!(
+            waiting.textures_delta.set.is_empty(),
+            "hidden clocks do not animate/upload"
+        );
+        drop(waiting);
+        session_request(address, id, 4, "emote", 126);
+        assert_eq!(avatars(&step(&ctx, &mut app, vec![])).len(), 1);
+        session_request_state(address, id, 5, "emote", 42, Some("clock"));
+        assert_eq!(clock_meshes(&step(&ctx, &mut app, vec![])).len(), 1);
+    }
+}
+
+#[test]
+fn card_global_fallback_dismissal_is_distinct_and_resets_when_inactive() {
+    let (ctx, mut app, address) = setup_defaults();
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "a", 2, "emote/close", 0);
+    card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+    assert_eq!(clock_meshes(&step(&ctx, &mut app, vec![])).len(), 1);
+    card_action(&ctx, &mut app, "Close clock");
+    assert_waiting(&step(&ctx, &mut app, vec![]));
+    session_request(address, "a", 3, "emote/heartbeat", 0);
+    session_request(address, "a", 4, "emote/close", 0);
+    assert_waiting(&step(&ctx, &mut app, vec![]));
+    // Legacy None must not share the synthetic fallback's suppression or cache.
+    session_request_state(address, "", 1, "emote", 42, Some("clock"));
+    assert_eq!(clock_meshes(&step(&ctx, &mut app, vec![])).len(), 1);
+    session_request(address, "", 2, "emote", 84);
+    assert_eq!(avatar_names(&step(&ctx, &mut app, vec![])), ["emote"]);
+
+    let (ctx, mut app, address) = setup_defaults();
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "a", 2, "emote/close", 0);
+    card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+    card_action(&ctx, &mut app, "Close clock");
+    session_request(address, "b", 1, "emote", 84);
+    assert_eq!(avatar_names(&step(&ctx, &mut app, vec![])), ["emote-session:b"]);
+    session_request(address, "b", 2, "emote/close", 0);
+    assert_eq!(clock_meshes(&step(&ctx, &mut app, vec![])).len(), 1);
+}
+
+#[test]
+fn card_stale_menu_never_closes_avatar_or_moves_replacement() {
+    for disappear in [false, true] {
+        let (ctx, mut app, address) = setup_defaults();
+        session_request_state(address, "a", 1, "emote", 42, Some("clock"));
+        session_request_state(address, "b", 1, "emote", 84, Some("clock"));
+        card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+        let close = painted_label(&menu::take(), "Close clock").unwrap();
+        if disappear {
+            session_request(address, "a", 2, "emote/close", 0);
+        } else {
+            session_request(address, "a", 2, "emote", 126);
+        }
+        menu::events(vec![
+            Event::PointerMoved(close),
+            button(close, PointerButton::Primary, true),
+        ]);
+        step(&ctx, &mut app, vec![]);
+        menu::events(vec![button(close, PointerButton::Primary, false)]);
+        step(&ctx, &mut app, vec![]);
+        let after = step(&ctx, &mut app, vec![]);
+        assert_eq!(
+            clock_meshes(&after).len(),
+            1,
+            "neighbor b cannot be closed by stale a"
+        );
+        assert_eq!(avatars(&after).len(), usize::from(!disappear));
+        drop(after);
+        // A move target also stays an identity if the preceding card disappears.
+        card_menu(&ctx, &mut app, Pos2::new(20.0, 150.0));
+        let move_up = painted_label(&menu::take(), "Move up").unwrap();
+        session_request(address, "b", 2, "emote/close", 0);
+        session_request(address, "c", 1, "emote", 42);
+        menu::events(vec![
+            Event::PointerMoved(move_up),
+            button(move_up, PointerButton::Primary, true),
+        ]);
+        step(&ctx, &mut app, vec![]);
+        menu::events(vec![button(move_up, PointerButton::Primary, false)]);
+        step(&ctx, &mut app, vec![]);
+        let expected = if disappear {
+            vec!["emote-session:c"]
+        } else {
+            vec!["emote-session:a", "emote-session:c"]
+        };
+        assert_eq!(avatar_names(&step(&ctx, &mut app, vec![])), expected);
+    }
+}
+
+#[test]
+fn card_gap_waiting_and_framed_background_menus_have_only_global_controls() {
+    let (ctx, mut app, address) = setup_defaults();
+    card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+    let waiting = menu::take();
+    assert!(painted_label(&waiting, "Move up").is_none());
+    assert!(painted_label(&waiting, "Close clock").is_none());
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "b", 1, "emote", 84);
+    // On the 192px test surface the two cards are 93.5 high, gap 93.5..98.5.
+    card_menu(&ctx, &mut app, Pos2::new(50.0, 96.0));
+    let gap = menu::take();
+    for label in ["Move up", "Move down", "Close clock"] {
+        assert!(painted_label(&gap, label).is_none());
+    }
+    for label in ["Avatar size", "Background color", "Exit"] {
+        assert!(painted_label(&gap, label).is_some());
+    }
+    // A real target includes both directions, with the last boundary disabled.
+    card_menu(&ctx, &mut app, Pos2::new(50.0, 150.0));
+    let popup = step(&ctx, &mut app, vec![]);
+    let child = popup
+        .viewport_output
+        .iter()
+        .find(|(id, _)| **id != egui::ViewportId::ROOT)
+        .unwrap()
+        .1;
+    let bounds = egui::Rect::from_min_size(Pos2::ZERO, child.builder.inner_size.unwrap());
+    let painted = menu::take();
+    for shape in &painted.shapes {
+        if let egui::Shape::Text(t) = &shape.shape {
+            assert!(bounds.contains_rect(egui::Rect::from_min_size(t.pos, t.galley.size())));
+        }
+    }
+    // Keep the existing compact-menu bound, including the new target controls.
+    let text_right = painted
+        .shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some(t.pos.x + t.galley.size().x),
+            _ => None,
+        })
+        .fold(0.0_f32, f32::max);
+    assert!(bounds.right() - text_right <= 20.0);
+    step(&ctx, &mut app, vec![]);
+    card_action(&ctx, &mut app, "Move down");
+    assert_eq!(
+        avatar_names(&step(&ctx, &mut app, vec![])),
+        ["emote-session:a", "emote-session:b"]
+    );
+    toggle_background(&ctx, &mut app);
+    toggle_option(&ctx, &mut app, "No frame");
+    // Tall framed slots have unused margin outside the proportional artwork.
+    let p = Pos2::new(1.0, 1.0);
+    let size = Vec2::new(192.0, 600.0);
+    for events in [
+        vec![Event::PointerMoved(p), button(p, PointerButton::Secondary, true)],
+        vec![button(p, PointerButton::Secondary, false)],
+        vec![],
+    ] {
+        let mut raw = input(events);
+        raw.screen_rect = Some(egui::Rect::from_min_size(Pos2::ZERO, size));
+        drop(Output::new(&ctx, ctx.run_ui(raw, |ui| app.show(ui))));
+    }
+    assert!(painted_label(&menu::take(), "Move up").is_none());
+}
+
 fn has_black_background(output: &Output) -> bool {
     output.shapes.iter().any(|shape| {
         matches!(&shape.shape, egui::Shape::Rect(rect)
@@ -2927,6 +3243,298 @@ fn toggle_no_frame_collecting_commands(
             .cloned(),
     );
     commands
+}
+
+fn set_background_color(ctx: &egui::Context, app: &mut EmoteApp) {
+    select_menu_option(ctx, app, "Background color");
+    for (channel, value) in [("R", 32), ("G", 128), ("B", 224)] {
+        let output = menu::take();
+        let p = output
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text().starts_with(&format!("{channel} ")) => {
+                    Some(t.pos + t.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("RGB channel must be editable in the native menu");
+        menu::events(vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Primary, true),
+        ]);
+        step(ctx, app, vec![]);
+        menu::events(vec![button(p, PointerButton::Primary, false)]);
+        step(ctx, app, vec![]);
+        menu::events(vec![
+            Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::CTRL,
+            },
+            Event::Text(value.to_string()),
+            Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            },
+        ]);
+        step(ctx, app, vec![]);
+        step(ctx, app, vec![]);
+    }
+    let expanded = step(ctx, app, vec![]);
+    let child = expanded
+        .viewport_output
+        .iter()
+        .find(|(id, _)| **id != egui::ViewportId::ROOT)
+        .unwrap()
+        .1;
+    let bounds = egui::Rect::from_min_size(Pos2::ZERO, child.builder.inner_size.unwrap());
+    for shape in &menu::take().shapes {
+        if let egui::Shape::Text(t) = &shape.shape {
+            assert!(bounds.contains_rect(egui::Rect::from_min_size(t.pos, t.galley.size())));
+        }
+    }
+    assert!(
+        expanded.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .is_empty()
+    );
+    // Collapse the picker again: the native menu must shrink to its controls.
+    let collapsed = select_menu_option(ctx, app, "Background color");
+    let size = collapsed
+        .viewport_output
+        .iter()
+        .find(|(id, _)| **id != egui::ViewportId::ROOT)
+        .unwrap()
+        .1
+        .builder
+        .inner_size
+        .unwrap();
+    assert!(size.y < bounds.height());
+    menu::events(vec![Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    }]);
+    step(ctx, app, vec![]);
+}
+
+fn assert_background_color(output: &Output, opacity: u8, count: usize) {
+    let backgrounds = compact_backgrounds(output);
+    assert_eq!(backgrounds.len(), if opacity == 0 { 0 } else { count });
+    let alpha = ((u16::from(opacity) * 255 + 50) / 100) as u8;
+    for background in backgrounds {
+        assert_eq!(
+            background.fill,
+            egui::Color32::from_rgba_unmultiplied(32, 128, 224, alpha)
+        );
+    }
+}
+
+#[test]
+fn background_color_waiting_is_independent_of_opacity_and_resets_on_restart() {
+    let (ctx, mut app, _) = setup_defaults();
+    let initial = step(&ctx, &mut app, vec![]);
+    assert_eq!(
+        compact_backgrounds(&initial)[0].fill,
+        egui::Color32::from_black_alpha(140)
+    );
+    set_background_color(&ctx, &mut app);
+    assert_background_color(&step(&ctx, &mut app, vec![]), 55, 1);
+    for opacity in [0, 50, 100] {
+        set_background_opacity(&ctx, &mut app, f32::from(opacity) / 100.0);
+        let output = step(&ctx, &mut app, vec![]);
+        assert_background_color(&output, opacity, 1);
+        assert!(
+            output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .is_empty()
+        );
+        assert_eq!(
+            eframe::App::clear_color(&app, &egui::Visuals::default()),
+            [0.0; 4]
+        );
+    }
+    toggle_background(&ctx, &mut app);
+    assert_background_color(&step(&ctx, &mut app, vec![]), 100, 1);
+    toggle_background(&ctx, &mut app);
+    assert_background_color(&step(&ctx, &mut app, vec![]), 55, 1);
+    let (ctx, mut app, _) = setup_defaults();
+    assert_eq!(
+        compact_backgrounds(&step(&ctx, &mut app, vec![]))[0].fill,
+        egui::Color32::from_black_alpha(140)
+    );
+}
+
+#[test]
+fn background_color_preserves_avatar_clock_geometry_frames_and_clear_gaps() {
+    for vertical in [false, true] {
+        let (ctx, mut app, address) = setup();
+        if vertical {
+            select_menu_option(&ctx, &mut app, "Vertical");
+        }
+        session_request(address, "a", 1, "emote", 42);
+        session_request_state(address, "b", 1, "emote", 84, Some("clock"));
+        let size = if vertical {
+            Vec2::new(192.0, 384.0)
+        } else {
+            Vec2::new(384.0, 192.0)
+        };
+        let before = compact_surface(&ctx, &mut app, size);
+        let original_avatar = avatars(&before);
+        let original_clock = clock_meshes(&before);
+        let original_frames = frames(&before);
+        let original_mesh = avatar_mesh(&before, original_avatar[0].0);
+        set_background_color(&ctx, &mut app);
+        // Settle clock time after the real menu has rendered at wall-clock time.
+        compact_surface(&ctx, &mut app, size);
+        let after = compact_surface(&ctx, &mut app, size);
+        assert_background_color(&after, 100, 1);
+        assert_eq!(avatars(&after), original_avatar);
+        assert_eq!(clock_meshes(&after), original_clock);
+        assert_eq!(frames(&after), original_frames);
+        assert_eq!(avatar_mesh(&after, original_avatar[0].0), original_mesh);
+        assert!(after.textures_delta.set.is_empty());
+        for opacity in [50, 0, 100] {
+            set_background_opacity(&ctx, &mut app, f32::from(opacity) / 100.0);
+            if opacity == 100 {
+                toggle_option(&ctx, &mut app, "No frame");
+            }
+            let output = compact_surface(&ctx, &mut app, size);
+            assert_background_color(&output, opacity, 2);
+            let cards =
+                expected_unframed_cards(egui::Rect::from_min_size(Pos2::ZERO, size), 2, vertical);
+            if opacity > 0 {
+                for (background, card) in compact_backgrounds(&output).iter().zip(cards) {
+                    assert_eq!(background.rect, card);
+                    assert_eq!(background.corner_radius, egui::CornerRadius::same(8));
+                }
+            }
+            assert!(
+                avatar_mesh(&output, avatars(&output)[0].0)
+                    .vertices
+                    .iter()
+                    .all(|v| v.color == egui::Color32::WHITE)
+            );
+            assert_compact_clock(&output, opacity);
+        }
+        session_request(address, "a", 2, "emote/close", 0);
+        assert_background_color(&compact_surface(&ctx, &mut app, size), 100, 1);
+        session_request(address, "b", 2, "emote/close", 0);
+        let global = compact_surface(&ctx, &mut app, size);
+        assert_background_color(&global, 100, 1);
+        assert_clock_pixels(&global, clock_meshes(&global)[0].0, 5000, None);
+        for opacity in [50, 0] {
+            set_background_opacity(&ctx, &mut app, f32::from(opacity) / 100.0);
+            assert_background_color(&compact_surface(&ctx, &mut app, size), opacity, 1);
+        }
+    }
+}
+
+struct ColorScratch(std::path::PathBuf);
+impl ColorScratch {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "gentle-rgb-ui-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+impl Drop for ColorScratch {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+#[test]
+fn background_color_persistence_changes_only_rgb_and_saves_immediately() {
+    let scratch = ColorScratch::new();
+    let path = scratch.0.join("nested/background-color.txt");
+    let unrelated = scratch.0.join("unrelated.txt");
+    std::fs::write(&unrelated, b"keep").unwrap();
+    let (ctx, app, _) = setup_defaults();
+    let mut app = app.with_background_color_path(path.clone());
+    step(&ctx, &mut app, vec![]);
+    assert!(!path.exists(), "startup must not save defaults");
+    set_background_color(&ctx, &mut app);
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        b"#2080e0\n",
+        "save before Drop"
+    );
+    set_background_opacity(&ctx, &mut app, 1.0);
+    toggle_option(&ctx, &mut app, "No frame");
+    select_menu_option(&ctx, &mut app, "Horizontal");
+    set_size_step(&ctx, &mut app, 5);
+    drop(app);
+    assert_eq!(std::fs::read(&path).unwrap(), b"#2080e0\n");
+    assert_eq!(std::fs::read(&unrelated).unwrap(), b"keep");
+
+    let (ctx, app, address) = setup_defaults();
+    let mut app = app.with_background_color_path(path.clone());
+    assert_background_color(&step(&ctx, &mut app, vec![]), 55, 1);
+    select_menu_option(&ctx, &mut app, "Background transparency");
+    let child = menu::take();
+    assert!(menu::checked(&child, "Transparent background"));
+    assert!(menu::checked(&child, "No frame"));
+    for label in ["x2", "45", "%"] {
+        assert!(
+            child
+                .shapes
+                .iter()
+                .any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == label))
+        );
+    }
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "b", 1, "emote", 84);
+    let output = surface_step(&ctx, &mut app, Vec2::new(136.0, 281.0));
+    let images = avatars(&output);
+    assert_eq!(images.len(), 2);
+    assert_eq!(images[0].1.min.x, images[1].1.min.x);
+    assert!(images[0].1.max.y < images[1].1.min.y);
+    assert!(
+        images
+            .iter()
+            .all(|(_, rect)| rect.size() == Vec2::splat(128.0))
+    );
+    assert!(frames(&output).is_empty());
+
+    let (ctx, mut ordinary, _) = setup_defaults();
+    assert_eq!(
+        compact_backgrounds(&step(&ctx, &mut ordinary, vec![]))[0].fill,
+        egui::Color32::from_black_alpha(140)
+    );
+    set_background_color(&ctx, &mut ordinary);
+    assert_eq!(std::fs::read(&path).unwrap(), b"#2080e0\n");
+}
+
+#[test]
+fn background_color_persistence_save_failure_keeps_live_rgb() {
+    let scratch = ColorScratch::new();
+    let blocker = scratch.0.join("not-a-directory");
+    std::fs::write(&blocker, b"keep").unwrap();
+    let (ctx, app, _) = setup_defaults();
+    let mut app = app.with_background_color_path(blocker.join("background-color.txt"));
+    assert_eq!(
+        compact_backgrounds(&step(&ctx, &mut app, vec![]))[0].fill,
+        egui::Color32::from_black_alpha(140)
+    );
+    set_background_color(&ctx, &mut app);
+    assert_background_color(&step(&ctx, &mut app, vec![]), 55, 1);
+    assert_eq!(std::fs::read(&blocker).unwrap(), b"keep");
 }
 
 #[test]
@@ -3130,6 +3738,18 @@ fn upload_only_on_new_snapshot_and_use_nearest_filter() {
                 ][i % 4]
         }));
         assert!(has_black_background(&output));
+        if shade == 84 {
+            let id = avatars(&output)[0].0;
+            let original_mesh = avatar_mesh(&output, id);
+            set_background_color(&ctx, &mut app);
+            let colored = step(&ctx, &mut app, vec![]);
+            assert_background_color(&colored, 100, 1);
+            assert_eq!(avatar_mesh(&colored, id), original_mesh);
+            assert!(
+                colored.textures_delta.set.is_empty(),
+                "changing RGB must preserve uploaded opaque black, partial alpha and clear pixels"
+            );
+        }
         toggle_background(&ctx, &mut app);
         let again = step(&ctx, &mut app, vec![]);
         assert!(!has_black_background(&again));

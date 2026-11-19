@@ -38,9 +38,28 @@ Exact OS error codes and text are host-specific.
 | Right-click anywhere | Open a separate options window: avatar-size slider with five steps x1–x5 (the avatar's 64-point image renders at that many points per source texel, x2 initial) |
 | Right-click → Transparent background | Checked initially at 45% transparency (opacity 55), with the slider enabled; uncheck to reset to opaque (0%) and disable the slider |
 | Right-click → Background transparency | While checked, adjust background-only transparency: 0% opaque, 100% invisible; for this session only |
+| Right-click → Background color | Expand the RGB picker to choose the background color (black unless saved); independent of transparency, saved globally for this desktop user |
 | Right-click → No frame | Hide decorative frames and leave transparent 5 px separators; preserve the remaining background; checked by default, for this session only |
 | Right-click → Vertical / Horizontal | Select Vertical or Horizontal stacking; Vertical is initial, for this session only |
+| Right-click a card → Move up / Move down | Move that card one visible position in Vertical stacking; end positions are disabled |
+| Right-click a card → Move left / Move right | Move that card one visible position in Horizontal stacking; end positions are disabled |
+| Right-click a clock card → Close clock | Hide only this clock until its identity receives an ordinary image; the desktop keeps receiving |
 | Right-click → Exit | Close the window and shut down the owned receiver |
+
+Card order and clock dismissals last only while this desktop instance is open;
+newly discovered cards append after existing cards, even when updates arrive.
+Right-click targets the actual card under the pointer, not its index or name.
+Clicks in separators, unused framed margins or the waiting surface show only
+global controls. Global size, color, transparency and stacking controls still affect
+all cards. Primary dragging still moves the window, never reorders cards.
+Only clocks can be closed this way (session clocks, the legacy clock, or the
+global fallback); ordinary avatar cards cannot be closed. Repeated clock images
+and heartbeats do not reopen a dismissed clock. An ordinary image restores that
+identity in its session-local order. Closing the last visible clock shows the
+initial 192×192 waiting surface, without exiting or immediately restoring a retained
+avatar/fallback. A dismissed global fallback stays hidden until that underlying
+fallback ends; a new avatar is shown normally and a later fallback can appear again.
+These controls do not close sender sessions or change the receiver protocol.
 
 The options use an independent, opaque native window, so all controls remain
 accessible even with a 128-pixel avatar; they are not clipped to the avatar's
@@ -86,6 +105,7 @@ uses the same clear-opening inset as a framed multi-avatar tile; **No frame**
 retains its borderless fit. Nonzero transparency hides frames, independently of that
 checkbox; changing transparency does not reset the **No frame** selection.
 The checkboxes, background transparency and stacking selection reset on restart.
+Only the background RGB color persists across restarts and projects for this desktop user.
 Avatars start at **x2**, with **45% background transparency**, **No frame**
 checked and **Vertical** stacking; no decorative frame is shown by default. The waiting surface has no decorative frame before an image arrives and keeps
 its native 192×192 initial square at every slider step; only actual avatars or
@@ -93,7 +113,7 @@ the clock fallback derive computed content sizes (the clock draws the
 composition of the chosen step). Physical dimensions also follow the OS display scale. Many
 sessions can exceed the monitor's width or height; scrolling, wrapping, and other
 overflow policies are outside this change. The desktop adds one source row of
-black top padding above the complete image. The complete 64×64 image is
+background-colored top padding above the complete image. The complete 64×64 image is
 uniformly fitted within a virtual 64×65 composition, centered in each tile
 without cropping or changing the PNG, using the largest whole number of
 physical pixels per source pixel at the display's current scale factor, with
@@ -104,8 +124,16 @@ Nearest-neighbor filtering keeps texel edges sharp. The background is
 **black at 45% transparency by default** (opacity 55), with
 **Transparent background** checked and its slider enabled.
 After unchecking it, checking it again enables **Background transparency** at 45% (opacity 55).
-The slider changes only the background; images, embedded labels and the options
-menu are not faded. Intermediate transparency retains the 8-pixel rounded background
+**Background color** expands a native RGB picker inside the options window;
+collapse it again to return to the compact menu. The selected color applies to
+the waiting surface, avatar cards, session clocks and global fallback clock.
+The existing transparency slider applies independently to that color, including
+when transparency is disabled (fully opaque). Black is used when no valid saved color
+is available. The selection is saved immediately when RGB changes; save failures
+retain the live color without interrupting the app. Both controls change only the background;
+received image pixels and their alpha, embedded labels, clock artwork and the
+opaque options menu are unchanged. This desktop-only setting does not configure
+the sender or any HTML/serial LED display. Intermediate transparency retains the 8-pixel rounded background
 and image contour, including with a single avatar. The checkbox stays checked
 at 0% and partial values. Unchecking resets to 0% transparency (fully opaque),
 not a remembered partial value. Any opacity below 100%
@@ -117,14 +145,28 @@ removal. On Windows, any background opacity below 100% disables the native undec
 window shadow and its thin perimeter; only 100% restores the opaque shadow
 policy. Native visual verification of shadow removal
 is still required. The choice is session-only and
-resets on restart. There is no click-through, persistent state, background
+resets on restart. There is no click-through, general window/settings persistence, background
 service, installer, or automatic sender configuration.
+
+The dedicated color file is `%APPDATA%/gentle-emote-desktop/background-color.txt`
+on Windows, `$XDG_CONFIG_HOME/gentle-emote-desktop/background-color.txt` on Linux
+(or `$HOME/.config/gentle-emote-desktop/background-color.txt` when XDG is unset),
+and `$HOME/Library/Application Support/gentle-emote-desktop/background-color.txt`
+on macOS. Roots must be absolute and nonempty; an invalid configured root disables
+persistence, never falling back to the current project. The strict format is lowercase
+`#rrggbb` with an optional single LF newline; saves include that newline. Startup
+reads at most nine bytes and uses black for missing, malformed, oversized or
+unreadable files, without repairing them. Only an actual RGB change creates the
+parent directory and writes this file. Writes are simple overwrites, not guaranteed
+atomic; simultaneous desktop instances use last-writer-wins. No other settings or
+sender/LED files are read or saved. Library/embedding `EmoteApp::new(receiver)`
+remains filesystem-free; only the native entry point opts in by supplying the path.
 
 ## Session compatibility
 
 Session-aware frames use `X-Emote-Session-Id` plus stream/sequence headers on the
-existing version-1 PNG endpoint. Distinct sessions appear in stable first-seen
-order; updates affect only their own tile. Closing or timing out a session removes
+existing version-1 PNG endpoint. Distinct sessions initially appear in first-seen
+order, then follow any session-local card moves; updates affect only their own tile. Closing or timing out a session removes
 its tile while others remain. Explicitly closing the last active session, with
 no legacy avatar present, immediately replaces its display with the internally
 rendered Lemmings pixel clock: the same 64x64 artwork as the sender display
