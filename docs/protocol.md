@@ -134,6 +134,11 @@ single-slot semantics and ignores stream/sequence metadata.
 Send bodyless `POST /emote/heartbeat` or `POST /emote/close` with the same version,
 session, stream and sequence headers. These endpoints do not require Content-Type.
 Send a heartbeat every **5 seconds**, including while the image is unchanged.
+In clock mode, after **more than 15 seconds** without an accepted frame or
+heartbeat, the session title displays `*NO SESSION*` in its usual alternating
+header slot. The next accepted frame or heartbeat restores the original title.
+This does not change the 30-second lease, normal avatars, or legacy senders
+without session metadata.
 They never create image placeholders. Only a valid decoded frame can introduce a
 session or take over an existing stable ID with a new stream.
 

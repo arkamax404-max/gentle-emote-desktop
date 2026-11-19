@@ -1,8 +1,8 @@
 use gentle_emote_desktop::{
     receiver::Frame,
     sessions::{
-        Event, MAX_ACTIVE_SESSIONS, MAX_KNOWN_SESSIONS, MAX_RETIRED_STREAMS, SESSION_TIMEOUT,
-        SessionRegistry, SessionState,
+        CLOCK_SILENCE_TIMEOUT, Event, MAX_ACTIVE_SESSIONS, MAX_KNOWN_SESSIONS, MAX_RETIRED_STREAMS,
+        SESSION_TIMEOUT, SessionRegistry, SessionState,
     },
 };
 use std::{
@@ -310,4 +310,60 @@ fn state_metadata_travels_through_snapshots_lifecycle_and_legacy() {
     assert_eq!(r.snapshots().len(), 1);
     assert_eq!(r.snapshots()[0].session_id, None);
     assert_eq!(r.snapshots()[0].state, SessionState::Clock);
+}
+
+#[test]
+fn clock_silence_hides_the_title_strictly_after_fifteen_seconds_and_recovers() {
+    let mut r = SessionRegistry::default();
+    let now = Instant::now();
+    r.apply("clock", "s", 1, clock_frame(1), now).unwrap();
+    r.apply("normal", "s", 1, frame(2), now).unwrap();
+    let silent = |r: &SessionRegistry, at| {
+        r.clock_tiles_at(at)
+            .into_iter()
+            .map(|tile| tile.stale)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        silent(&r, now + CLOCK_SILENCE_TIMEOUT),
+        vec![false, false],
+        "exactly fifteen seconds is still live contact"
+    );
+    let stale = now + CLOCK_SILENCE_TIMEOUT + Duration::from_nanos(1);
+    assert_eq!(silent(&r, stale), vec![true, false]);
+    // Replayed pulses must not restore the title or renew the timer.
+    assert!(!r.apply("clock", "s", 1, Event::Heartbeat, stale).unwrap());
+    assert_eq!(silent(&r, stale), vec![true, false]);
+    r.apply("clock", "s", 2, Event::Heartbeat, stale).unwrap();
+    assert_eq!(silent(&r, stale), vec![false, false]);
+    r.apply(
+        "clock",
+        "s",
+        3,
+        clock_frame(3),
+        stale + Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(
+        silent(&r, stale + Duration::from_secs(25)),
+        vec![false, false],
+        "an accepted frame renews contact, and normal avatars never go silent"
+    );
+    r.expire(now + Duration::from_secs(30));
+    r.expire(stale + Duration::from_secs(40));
+    let tiles = r.clock_tiles_at(stale + Duration::from_secs(40));
+    assert_eq!(tiles.len(), 1);
+    assert!(
+        tiles[0].stale,
+        "the retained final snapshot also reports silence"
+    );
+    assert_eq!(
+        tiles[0].name, None,
+        "silence never rewrites the recorded name"
+    );
+    assert_eq!(
+        r.snapshots_with_names()[0].1,
+        None,
+        "original metadata is unchanged"
+    );
 }

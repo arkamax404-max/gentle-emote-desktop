@@ -18,6 +18,10 @@ use chrono::{DateTime, Datelike, FixedOffset, Timelike};
 /// schedules its repaint with this period while any clock tile is visible.
 pub const ANIMATION_PERIOD_MS: u64 = 500;
 
+/// Header shown instead of a project name once a clock session stops reporting.
+/// The session registry only reports the rule; the copy belongs to presentation.
+pub const STALE_TITLE: &str = "*NO SESSION*";
+
 const WHITE: [u8; 3] = [242, 241, 220];
 const MUTED: [u8; 3] = [147, 181, 160];
 const BLUE: [u8; 3] = [85, 189, 232];
@@ -100,6 +104,7 @@ const ID_GLYPHS: &[(char, [&str; 5])] = &[
     ('z', ["000", "111", "001", "010", "111"]),
     ('.', ["000", "000", "000", "000", "010"]),
     ('_', ["000", "000", "000", "000", "111"]),
+    ('*', ["000", "101", "010", "101", "000"]),
     ('-', ["000", "000", "111", "000", "000"]),
 ];
 

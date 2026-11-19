@@ -2,7 +2,7 @@
 //!
 //! HTTP parsing belongs to Hyper, not this module. The small policy layer below
 //! validates the request before decoding, then publishes only a fully valid PNG.
-use crate::sessions::{Event, SessionRegistry, SessionSnapshot, SessionState};
+use crate::sessions::{ClockTile, Event, SessionRegistry, SessionSnapshot, SessionState};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{
@@ -44,18 +44,17 @@ impl LatestFrame {
     }
 
     /// Read presentation state atomically, without holding the lock during rendering.
-    pub(crate) fn display_snapshot(&self) -> (Vec<(SessionSnapshot, Option<String>)>, bool) {
-        let registry = self.0.lock().expect("frame lock poisoned");
-        (registry.snapshots_with_names(), registry.show_clock())
+    /// The only name-bearing accessor: titles, silence and `show_clock` come from one
+    /// observation, so a caller cannot read a clock title that skips the silence rule.
+    pub fn display_snapshot(&self) -> (Vec<ClockTile>, bool) {
+        self.display_snapshot_at(Instant::now())
     }
 
-    /// Atomically pair visible frames with their optional sender project names.
-    /// The original snapshot API and its public struct remain unchanged.
-    pub fn snapshots_with_names(&self) -> Vec<(SessionSnapshot, Option<String>)> {
-        self.0
-            .lock()
-            .expect("frame lock poisoned")
-            .snapshots_with_names()
+    /// Same observation at a supplied instant, so the silence rule is testable
+    /// without sleeping. Production reads the monotonic clock once per frame.
+    pub(crate) fn display_snapshot_at(&self, now: Instant) -> (Vec<ClockTile>, bool) {
+        let registry = self.0.lock().expect("frame lock poisoned");
+        (registry.clock_tiles_at(now), registry.show_clock())
     }
 
     /// Active avatars in stable first-seen order, or the retained final avatar.
@@ -451,4 +450,55 @@ fn decode(bytes: &[u8]) -> Option<Frame> {
         }
     }
     (rgba.len() == RGBA_BYTES).then_some(Frame { rgba })
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+    use crate::sessions::CLOCK_SILENCE_TIMEOUT;
+
+    fn latest_with_clock(observed: Instant) -> LatestFrame {
+        let mut registry = SessionRegistry::default();
+        registry
+            .apply_named(
+                "clock",
+                "s",
+                1,
+                Event::Frame(
+                    Arc::new(Frame {
+                        rgba: vec![0; RGBA_BYTES],
+                    }),
+                    SessionState::Clock,
+                ),
+                Some("ProjectAlpha".into()),
+                observed,
+            )
+            .unwrap();
+        LatestFrame(Arc::new(Mutex::new(registry)))
+    }
+
+    #[test]
+    fn display_snapshot_applies_the_clock_silence_rule_at_the_render_seam() {
+        let observed = Instant::now();
+        let latest = latest_with_clock(observed);
+        let (tiles, show_clock) = latest.display_snapshot_at(observed + CLOCK_SILENCE_TIMEOUT);
+        assert!(!show_clock);
+        assert_eq!(tiles.len(), 1);
+        assert_eq!(tiles[0].name.as_deref(), Some("ProjectAlpha"));
+        assert!(!tiles[0].stale, "the rule is strictly more than 15 seconds");
+        let (tiles, _) = latest.display_snapshot_at(observed + CLOCK_SILENCE_TIMEOUT * 2);
+        assert!(tiles[0].stale);
+        assert_eq!(
+            tiles[0].name.as_deref(),
+            Some("ProjectAlpha"),
+            "silence is presentation-only and never rewrites metadata"
+        );
+        assert!(
+            tiles[0].snapshot.active,
+            "the 30-second lifecycle lease stays independent"
+        );
+        // Production reads the monotonic clock itself, so fresh contact is shown.
+        let (tiles, _) = latest.display_snapshot();
+        assert!(!tiles[0].stale);
+    }
 }

@@ -1,7 +1,7 @@
 //! Native presentation: the network owns publication; this app owns GPU resources.
 use crate::idle_clock_image::{self, ANIMATION_PERIOD_MS};
 use crate::receiver::{Frame, LatestFrame, Receiver};
-use crate::sessions::SessionState;
+use crate::sessions::{ClockTile, SessionState};
 use eframe::egui::{
     self, ColorImage, PointerButton, TextureHandle, TextureOptions, Vec2, ViewportCommand,
 };
@@ -16,6 +16,16 @@ struct ClockTexture {
     step: i64,
     name: Option<String>,
     texture: TextureHandle,
+}
+
+/// Clock header text for one tile. Silence is a presentation decision, so the
+/// substitute copy is chosen here instead of in the session registry.
+fn clock_header(tile: &ClockTile) -> Option<String> {
+    if tile.stale {
+        Some(idle_clock_image::STALE_TITLE.to_owned())
+    } else {
+        tile.name.clone()
+    }
 }
 
 fn load_avatar_frame(ctx: &egui::Context) -> TextureHandle {
@@ -288,14 +298,15 @@ impl EmoteApp {
         let (snapshots, show_clock) = self.latest.display_snapshot();
         // Cache only visible clock keys, bounded by the registry's snapshot cap.
         // IDs remain cache identity, never display-name fallbacks. The global
-        // clock has no name; legacy frames may supply one without an ID.
+        // clock has no name; legacy frames may supply one without an ID. The
+        // silent-session copy is chosen here, not in the session registry.
         let clock_inputs: Vec<_> = if show_clock {
             vec![(None, None)]
         } else {
             snapshots
                 .iter()
-                .filter(|(s, _)| s.state == SessionState::Clock)
-                .map(|(s, name)| (s.session_id.clone(), name.clone()))
+                .filter(|tile| tile.snapshot.state == SessionState::Clock)
+                .map(|tile| (tile.snapshot.session_id.clone(), clock_header(tile)))
                 .collect()
         };
         let any_clock = !clock_inputs.is_empty();
@@ -335,10 +346,7 @@ impl EmoteApp {
         }
         // Ordinary avatar geometry and texture handling still consume exactly
         // the original ordered snapshots; names affect only clock pixels.
-        let snapshots: Vec<_> = snapshots
-            .into_iter()
-            .map(|(snapshot, _)| snapshot)
-            .collect();
+        let snapshots: Vec<_> = snapshots.into_iter().map(|tile| tile.snapshot).collect();
         self.textures
             .retain(|key, _| snapshots.iter().any(|snapshot| &snapshot.session_id == key));
         for snapshot in &snapshots {
