@@ -90,8 +90,15 @@ instance-nonce / checked-counter ID and monotonic click timestamp. Clicking does
 not change frames, sequence, ordering, contact timestamps or repaint counters.
 There is no UI-to-worker channel, unbounded queue, polling or persisted action.
 
-After normal HTTP validation and PNG decode, the receiver applies ACK and chooses
-optional focus response headers under that same mutex. The internal application
+After normal HTTP validation and PNG decode, the receiver applies
+`X-Emote-Focus-Ack` and chooses the sole optional focus response header,
+`X-Emote-Focus-Request-Id`, under that same mutex. No generic action or session
+response headers are emitted. The sender ACKs only after confirmed Herdr focus
+(successful Promise, CLI exit 0 and JSON `agent_info` for the expected pane with
+`focused: true`). Without an ACK, the same ID is redelivered on every accepted
+frame or heartbeat POST for that current session stream until the 15-second TTL
+or lifecycle cleanup; the sender deduplicates without retrying failed IDs.
+The internal application
 result distinguishes an accepted unchanged heartbeat from ignored traffic; the
 original public registry `apply` still reports only visible changes. This avoids
 delivering to replays or accepting their ACKs. Decode/body waits remain outside

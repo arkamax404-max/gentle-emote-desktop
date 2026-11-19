@@ -51,9 +51,13 @@ A focus click requires press and release on the same active session card without
 dragging; session clock cards count too. It queues on release, never on press.
 Legacy cards without a session ID, global fallback clocks, inactive retained
 cards, separators and unused framed margins do nothing. Each click replaces that
-session's pending request with a new ID. Delivery retries until an exact receipt
-ACK or 15 seconds from the click; close, lease expiry, stream takeover, eviction
-and shutdown clear it. The desktop does not focus Windows Terminal or select
+session's pending request with a new ID. The sole optional focus response header
+is `X-Emote-Focus-Request-Id`. Without an ACK, the same ID is redelivered on every
+accepted frame or heartbeat POST for that current session stream until 15 seconds
+from the click; close, lease expiry, stream takeover, eviction and shutdown clear
+it. The sender sends `X-Emote-Focus-Ack` only after confirmed Herdr focus (successful
+Promise, CLI exit 0 and JSON `agent_info` for the expected pane with `focused: true`),
+and deduplicates without retrying failed IDs. The desktop does not focus Windows Terminal or select
 emulator tabs itself. Old senders may ignore the optional response headers;
 HTTP success remains 204 with no body. See the [focus wire contract](docs/protocol.md#desktop-focus-requests-optional-response-headers).
 

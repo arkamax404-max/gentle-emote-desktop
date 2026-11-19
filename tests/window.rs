@@ -3714,9 +3714,17 @@ fn focus_poll(address: std::net::SocketAddr, id: &str, seq: u64) -> Option<Strin
     socket.read_to_string(&mut response).unwrap();
     assert!(response.starts_with("HTTP/1.1 204 "), "{response}");
     assert_eq!(response.split_once("\r\n\r\n").unwrap().1, "");
+    for name in ["x-emote-action", "x-emote-action-id", "x-emote-session-id"] {
+        assert!(
+            !response.lines().any(|line| line
+                .split_once(':')
+                .is_some_and(|(key, _)| key.eq_ignore_ascii_case(name))),
+            "unexpected {name}: {response}"
+        );
+    }
     response.lines().find_map(|line| {
         let (key, value) = line.split_once(':')?;
-        key.eq_ignore_ascii_case("x-emote-action-id")
+        key.eq_ignore_ascii_case("x-emote-focus-request-id")
             .then(|| value.trim().to_owned())
     })
 }

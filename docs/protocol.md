@@ -178,13 +178,14 @@ Arcs remain valid after replacement or shutdown.
 A primary click without dragging on an active session card queues a focus request
 for that exact session ID (including an idle session's clock card). The next
 **accepted current-stream** `POST /emote` or `POST /emote/heartbeat` for that
-session returns these optional headers:
+session returns only this optional focus header:
 
 ```http
-X-Emote-Action: focus
-X-Emote-Action-Id: <request-id>
-X-Emote-Session-Id: <exact requesting session id>
+X-Emote-Focus-Request-Id: <request-id>
 ```
+
+No `X-Emote-Action`, `X-Emote-Action-Id` or `X-Emote-Session-Id` response
+headers are emitted; the request already identifies the session.
 
 Success remains **204 with an empty body**, the existing Content-Type and
 Connection headers are unchanged, and existing error statuses/bodies are unchanged.
@@ -193,14 +194,19 @@ is pending, on close, errors, ignored/replayed/retired-stream traffic, or legacy
 requests without a session ID. An accepted heartbeat can deliver a request while
 the sender is idle; keep sending those every 5 seconds.
 
-Send `X-Emote-Action-Ack: <request-id>` on the next frame or heartbeat. An exact
-matching ACK means **received / do not retry**, not successful focus. ACK handling
-and response selection happen atomically after body/decode and the same session,
+Send `X-Emote-Focus-Ack: <request-id>` on the next frame or heartbeat **only
+after confirmed Herdr focus**: the focus Promise succeeds, the CLI exits 0 and
+its JSON `agent_info` identifies the expected pane with `focused: true`. Without
+an ACK, the desktop redelivers the **same ID on every accepted POST** to `/emote`
+or `/emote/heartbeat` for that current session stream until the 15-second TTL
+(or lifecycle cleanup). The obsolete `X-Emote-Action-Ack` header is ignored.
+ACK handling and response selection happen atomically after body/decode and the same session,
 stream, sequence and capacity guards as publication. Rejected or ignored input
 cannot clear a pending request. A new click replaces the pending request with a
 new ID; an old ACK cannot clear that newer click. Unknown, malformed or duplicate
 ACK headers are ignored, never an application 400. HTTP parser/size limits still
-apply. Senders should deduplicate repeated delivery by request ID.
+apply. Senders deduplicate repeated delivery by request ID without retrying
+failed IDs; a failed focus sends no ACK.
 
 There is at most one pending request per bounded known session record. Request
 IDs match `^[A-Za-z0-9_.:-]{1,128}$`, using an instance nonce and checked click

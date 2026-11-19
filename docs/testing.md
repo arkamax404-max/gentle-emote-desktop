@@ -6,7 +6,41 @@ external sender each establish different things. The real sender transport check
 below passed; it did not capture each real frame's framebuffer. Windows/Linux
 execution and human visual OS-behavior checks remain outstanding.
 
-## Desktop focus-request handoff (T1, S1–S7)
+## Desktop focus-request header contract (T2, S2–S3)
+
+The receiver emits only `X-Emote-Focus-Request-Id` as its optional focus header
+on accepted current-stream frame/heartbeat POSTs, still returning 204/empty body.
+Receiver and headless window helpers assert the obsolete `X-Emote-Action`,
+`X-Emote-Action-Id` and response `X-Emote-Session-Id` names are absent. A dedicated
+regression proves `X-Emote-Action-Ack` no longer clears pending focus, while
+`X-Emote-Focus-Ack` does. Existing tests retain exact/old/malformed/unknown/duplicate
+ACK, delivery suppression, pixel/notification and lifecycle coverage.
+
+The sender ACKs only after confirmed Herdr focus (successful Promise, CLI exit 0,
+JSON `agent_info` for the expected pane with `focused: true`). Without an ACK,
+the same ID is redelivered on every accepted frame or heartbeat POST for that
+current session stream until the 15-second TTL or lifecycle cleanup. The sender
+deduplicates without retrying failed IDs. Desktop tests do not establish actual
+sender focus confirmation; real sender/Herdr integration remains pending.
+
+Test-first RED with the updated assertions, before receiver changes:
+`cargo test --offline --config build.incremental=false --target-dir target/focus-check --test receiver focus_`
+exited **101 (2 passed, 7 failed)** because the new response header was absent.
+After the rename, that command exited **0 (9 passed)**. Using the same Cargo
+prefix, `--lib focus_` passed **5**, `--test window focus_` passed **4**, and
+`--test sessions` passed **10**, all exit 0. All runs used PowerShell.
+
+The single full `--test receiver` run exited **101 (33 passed, 1 failed)** at
+`tests/receiver.rs:61` in
+`project_name_rejection_preserves_pixels_state_name_notifications_and_sequence`
+with Windows ConnectionAborted / OS 10053, the reported pre-existing intermittent
+failure. Its one authorized rerun with the same Cargo prefix and
+`--test receiver project_name_rejection_preserves_pixels_state_name_notifications_and_sequence -- --exact`
+exited **0 (1 passed)**. The failed full run is not claimed green. No app was
+launched/closed and no full unfiltered suite or native Herdr focus check was run.
+Rustfmt was limited to `src/receiver.rs`, `tests/receiver.rs` and `tests/window.rs`.
+
+## Desktop focus-request handoff (T1, S1–S7; historical generic headers)
 
 The `focus_*` checks use only ephemeral receivers and headless egui; no desktop
 process is launched or closed, no real user configuration is used, and no sender,

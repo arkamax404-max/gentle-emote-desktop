@@ -970,8 +970,8 @@ fn session_http_repaint_can_read_snapshots_after_publication() {
     assert_eq!(handle.get().unwrap().snapshots()[0].frame.rgba[0], 8);
 }
 
-fn action(response: &str) -> Option<String> {
-    wire_header(response, "x-emote-action-id")
+fn focus_request_id(response: &str) -> Option<String> {
+    wire_header(response, "x-emote-focus-request-id")
 }
 
 fn wire_header(response: &str, name: &str) -> Option<String> {
@@ -989,15 +989,14 @@ fn wire_header(response: &str, name: &str) -> Option<String> {
 
 fn assert_focus(response: &str, id: Option<&str>, session: &str) {
     assert_response(response, 204, "");
-    assert_eq!(action(response).as_deref(), id);
     assert_eq!(
-        wire_header(response, "x-emote-action").as_deref(),
-        id.map(|_| "focus")
+        focus_request_id(response).as_deref(),
+        id,
+        "focus response for {session}"
     );
-    assert_eq!(
-        wire_header(response, "x-emote-session-id").as_deref(),
-        id.map(|_| session)
-    );
+    for name in ["x-emote-action", "x-emote-action-id", "x-emote-session-id"] {
+        assert!(wire_header(response, name).is_none(), "unexpected {name}");
+    }
     assert_eq!(
         wire_header(response, "connection").as_deref(),
         Some("close")
@@ -1033,7 +1032,7 @@ impl FocusWire {
     ) -> String {
         let mut headers = session_headers(session, stream, &sequence.to_string());
         if let Some(ack) = ack {
-            headers.push_str(&format!("X-Emote-Action-Ack: {ack}\r\n"));
+            headers.push_str(&format!("X-Emote-Focus-Ack: {ack}\r\n"));
         }
         request(
             self.receiver.local_addr(),
@@ -1117,6 +1116,42 @@ fn focus_ack_exact_and_old_ack_cannot_clear_a_newer_click() {
 }
 
 #[test]
+fn focus_obsolete_action_ack_does_not_clear_pending_request() {
+    let wire = FocusWire::new();
+    let id = wire.click();
+    let saved = wire.receiver.latest().get().unwrap();
+    let headers = format!(
+        "{}X-Emote-Action-Ack: {id}\r\n",
+        session_headers("Case.Session:1", "s", "2")
+    );
+    assert_focus(
+        &request(
+            wire.receiver.local_addr(),
+            "POST",
+            "/emote/heartbeat",
+            &headers,
+            &[],
+        ),
+        Some(&id),
+        "Case.Session:1",
+    );
+    assert_focus(
+        &wire.send("/emote/heartbeat", "Case.Session:1", "s", 3, None),
+        Some(&id),
+        "Case.Session:1",
+    );
+    assert!(Arc::ptr_eq(&saved, &wire.receiver.latest().get().unwrap()));
+    assert_eq!(wire.count.load(Ordering::SeqCst), 1);
+    assert_focus(
+        &wire.send("/emote/heartbeat", "Case.Session:1", "s", 4, Some(&id)),
+        None,
+        "Case.Session:1",
+    );
+    assert!(Arc::ptr_eq(&saved, &wire.receiver.latest().get().unwrap()));
+    assert_eq!(wire.count.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn focus_ids_are_bounded_ascii_unique_across_clicks_and_instances() {
     let mut ids = std::collections::HashSet::new();
     for _ in 0..3 {
@@ -1160,7 +1195,7 @@ fn focus_malformed_unknown_and_duplicate_ack_are_ignored() {
         );
     }
     let headers = format!(
-        "{}X-Emote-Action-Ack: {id}\r\nX-Emote-Action-Ack: {id}\r\n",
+        "{}X-Emote-Focus-Ack: {id}\r\nX-Emote-Focus-Ack: {id}\r\n",
         session_headers("Case.Session:1", "s", "9")
     );
     assert_focus(
@@ -1183,7 +1218,7 @@ fn focus_rejections_replays_retired_and_legacy_neither_deliver_nor_ack() {
     let id = wire.click();
     let saved = wire.receiver.latest().get().unwrap();
     let headers = format!(
-        "{}X-Emote-Action-Ack: {id}\r\n",
+        "{}X-Emote-Focus-Ack: {id}\r\n",
         session_headers("Case.Session:1", "s", "2")
     );
     let error = request(
@@ -1194,7 +1229,12 @@ fn focus_rejections_replays_retired_and_legacy_neither_deliver_nor_ack() {
         b"bad",
     );
     assert_response(&error, 422, "expected a 64x64 PNG\n");
-    for name in ["x-emote-action", "x-emote-action-id", "x-emote-session-id"] {
+    for name in [
+        "x-emote-focus-request-id",
+        "x-emote-action",
+        "x-emote-action-id",
+        "x-emote-session-id",
+    ] {
         assert!(wire_header(&error, name).is_none());
     }
     assert_focus(
@@ -1229,7 +1269,7 @@ fn focus_rejections_replays_retired_and_legacy_neither_deliver_nor_ack() {
             wire.receiver.local_addr(),
             "POST",
             "/emote",
-            &format!("{HEADERS}X-Emote-Action-Ack: {new_id}\r\n"),
+            &format!("{HEADERS}X-Emote-Focus-Ack: {new_id}\r\n"),
             &png(64, 64, 8),
         ),
         None,
@@ -1250,7 +1290,7 @@ fn focus_delayed_frame_ack_is_checked_after_new_click_and_stream_guards() {
         let first = wire.click();
         let bytes = png(64, 64, 99);
         let mut slow = connect(wire.receiver.local_addr());
-        write!(slow, "POST /emote HTTP/1.1\r\nHost: localhost\r\n{}X-Emote-Action-Ack: {first}\r\nContent-Length: {}\r\n\r\n", session_headers("Case.Session:1", "s", "2"), bytes.len()).unwrap();
+        write!(slow, "POST /emote HTTP/1.1\r\nHost: localhost\r\n{}X-Emote-Focus-Ack: {first}\r\nContent-Length: {}\r\n\r\n", session_headers("Case.Session:1", "s", "2"), bytes.len()).unwrap();
         slow.write_all(&bytes[..1]).unwrap();
         if takeover {
             assert_focus(

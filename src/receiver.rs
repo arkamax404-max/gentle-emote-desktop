@@ -263,8 +263,8 @@ async fn handle(
     };
     // Optional ACKs never cause a policy error. Duplicate, non-ASCII and
     // malformed values are ignored, and only an accepted request may consume one.
-    let ack = (headers.get_all("x-emote-action-ack").iter().count() == 1)
-        .then(|| headers.get("x-emote-action-ack")?.to_str().ok())
+    let ack = (headers.get_all("x-emote-focus-ack").iter().count() == 1)
+        .then(|| headers.get("x-emote-focus-ack")?.to_str().ok())
         .flatten()
         .filter(|value| valid_id(value))
         .map(str::to_owned);
@@ -341,16 +341,8 @@ async fn handle(
                     if let Some(id) = applied.focus {
                         let headers = response.headers_mut();
                         headers.insert(
-                            "x-emote-action",
-                            hyper::header::HeaderValue::from_static("focus"),
-                        );
-                        headers.insert(
-                            "x-emote-action-id",
-                            id.parse().expect("generated ASCII action ID"),
-                        );
-                        headers.insert(
-                            "x-emote-session-id",
-                            session.parse().expect("validated session ID"),
+                            "x-emote-focus-request-id",
+                            id.parse().expect("generated ASCII focus request ID"),
                         );
                     }
                     applied.changed
