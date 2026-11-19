@@ -8,7 +8,8 @@ can keep port 8000.
 ## Run
 
 With Rust **1.95 or newer**, Cargo, a native compiler/linker, and a graphical
-session available, run from this directory:
+session available, run from this directory. The production renderer is WGPU on
+macOS and Glow on Windows/Linux; no renderer flag is needed:
 
 ```sh
 cargo run
@@ -24,6 +25,22 @@ production `ExternalDisplay` API with an explicit per-run loopback destination.
 Two distinct composed PNGs reached the production desktop receiver with HTTP 204.
 See the [recorded evidence and manual checklist](docs/testing.md) for scope and
 limits; no sender source or global destination was intentionally changed.
+
+### Sender transparency (optional, per desktop target)
+
+For senders supporting `transparentBackground`, add this field to the existing
+HTTP desktop target for `http://127.0.0.1:8001/emote`:
+
+```json
+"transparentBackground": true
+```
+
+Reload the sender after changing its target configuration. The default is
+`false`: the sender flattens PNG pixels to alpha 255. Opting in preserves the
+source RGBA, including opaque black pixels; it does **not** turn an arbitrary
+opaque PNG or its black background transparent. The desktop's background slider
+only changes its own underlay, not incoming image pixels. This option belongs
+to that desktop target, not a global transparency setting or an LED target.
 
 A busy port or native window/backend startup failure causes a nonzero exit;
 there is no silent fallback port. Errors are reported on stderr where available.
@@ -251,14 +268,21 @@ limits, and the graphical `native_smoke` example.
 
 ## Platform status
 
-Eframe/egui **0.37.0** uses the Glow renderer; Linux X11 and Wayland source
-backends are enabled. macOS, Windows, and Linux are **source/build targets**, not
-a claim of tested execution on all three. A graphical session and suitable
-native graphics/toolchain libraries are required.
+Eframe/egui **0.37.0** uses WGPU on macOS and Glow on Windows/Linux;
+Linux X11 and Wayland source backends are enabled. WGPU is enabled by default
+only for the macOS target. The optional `diagnostic-wgpu` feature still enables
+WGPU for the transparency probe on other targets; it does not change the
+production renderer selection. A graphical session and suitable native
+graphics/toolchain libraries are required.
 
-The native framebuffer smoke passed on the macOS development host using a
-protocol-compatible test sender, including HTTP 204 and port release. This is
-not human visual confirmation of topmost, drag, or menu behavior. Real sender
-transport was separately exercised; per-real-frame framebuffer capture was not.
-Human window checks and Windows/Linux execution remain outstanding. On Wayland,
-topmost placement and window moves depend on compositor support/policy.
+| Platform | Compatibility and evidence |
+| --- | --- |
+| **macOS — locally tested and compatible** | Production WGPU build and native framebuffer smoke passed (HTTP 204, expected RGB, clean close/port release). After relaunch with per-target sender `transparentBackground: true`, the human confirmed visible transparency: “ok, va perfecto ahora”. Native overlay shadows are disabled to avoid ghosting; that alone does not fix opaque sender pixels. |
+| Windows | Existing Glow source/build target, with historical Windows build, headless-test and native-smoke evidence in the testing guide; not executed in this session. |
+| Linux | Existing Glow source/build target with X11/Wayland enabled; not executed in this session. On Wayland, topmost placement and window moves depend on compositor support/policy. |
+
+Local macOS acceptance is not a universal minimum macOS version, graphics-device
+or display-scale guarantee, nor proof of every manual window check. The earlier
+Glow smoke and real sender transport checks remain separate historical evidence;
+framebuffer alpha alone is not proof of visible compositor transparency. See the
+[testing guide](docs/testing.md) for results and remaining checks.

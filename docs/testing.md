@@ -3,8 +3,10 @@
 Start with the headless suite, then use native checks only in a suitable graphical
 session. Socket tests, framebuffer capture, human window inspection, and a real
 external sender each establish different things. The real sender transport check
-below passed; it did not capture each real frame's framebuffer. Windows/Linux
-execution and human visual OS-behavior checks remain outstanding.
+below passed; it did not capture each real frame's framebuffer. Production macOS
+WGPU transparency has since received local human acceptance after relaunch with
+sender alpha preservation enabled. Windows/Linux were not executed this session;
+remaining manual checks and historical platform evidence are distinguished below.
 
 ## Desktop focus-request header contract (T2, S2–S3)
 
@@ -100,6 +102,54 @@ Rust files; final whitespace/status checks are reported in the implementation
 handoff. This change exceeds the approximate 400-authored-line planning heuristic
 because it includes deterministic lifetime, public wire/UI tests and protocol docs;
 that heuristic was not used to compress or omit coverage.
+## Platform renderer checks
+
+Production `native_options()` selects WGPU on macOS and Glow on other targets.
+`native_renderer_matches_platform` asserts the target's compile-time selection:
+
+```sh
+cargo test --offline --test window native_renderer_matches_platform -- --exact
+```
+
+Run this on each target to verify its branch; a macOS pass is not Windows/Linux
+compilation evidence. The `diagnostic-wgpu` feature remains available for the
+optional transparency probe, without changing production selection. On the
+reported Mac, the human confirmed desktop transparency with the WGPU diagnostic
+but not Glow. Both diagnostic framebuffer captures had correct pre-swap alpha;
+this observation does not establish a universal root cause or platform guarantee.
+Production WGPU visual acceptance was subsequently confirmed after rebuilding
+and relaunching the desktop with per-target sender `transparentBackground: true`:
+the human reported “ok, va perfecto ahora”. The production macOS overlay disables
+native shadows to avoid ghosting; this is not the sole opacity cure. The sender's
+default `false` flattens PNG alpha to 255; the target opt-in preserves source RGBA,
+including opaque black, and requires sender reload. It does not remove black or
+make an opaque source PNG transparent. See the [per-target setup](../README.md#sender-transparency-optional-per-desktop-target).
+No personal sender configuration is included in the repository changes.
+
+### Post-v0.1.4 macOS verification and acceptance
+
+The production WGPU build and native framebuffer smoke passed locally, including
+HTTP 204, expected framebuffer RGB and clean close/port release. Format, all-target
+Clippy with warnings denied, and build checks passed. The window suite reported
+**54 passed, 5 failed**; it is not a green full-suite result. One color-test failure
+was reproduced identically on the baseline; the other four failures have **not**
+all been established as baseline failures. These results are recorded prior
+verification, not checks rerun for the documentation/diagnostic cleanup.
+
+The human confirmation above establishes locally tested macOS transparency with
+the production renderer and the configured sender. It does not establish a
+minimum macOS version, all-device/DPI compatibility, every manual interaction,
+or Windows/Linux execution in this session. Earlier Windows evidence below
+remains historical, not superseded by a claim that Windows has never run.
+
+The transparency probe's held-window identifier occupies logical coordinates
+(8, 8)–(164, 26). Its old top sample at (96, 24) could measure the opaque badge
+instead of the background in CAPTURE runs. The sample now uses normalized
+framebuffer coordinates `(7/8 width, 1/4 height)` — (168, 48) on the 192-point
+surface — outside the badge at display scale and away from Waiting text. This
+is a deterministic diagnostic-only correction, not a production rendering fix.
+`--no-capture` still reports no framebuffer measurement and cannot claim a sample
+PASS; native capture checks must be rerun separately to validate the new sample.
 
 ## Default developer checks
 
@@ -759,7 +809,8 @@ cargo run --example native_smoke
 
 [`examples/native_smoke.rs`](../examples/native_smoke.rs) wraps the reusable
 `EmoteApp` and `native_options`, delegates to the product's native `App::ui`,
-and forwards its transparent renderer clear color. The wrapper's observation
+and forwards its transparent renderer clear color. It uses the production
+renderer (WGPU on macOS, Glow elsewhere), without a Glow override. The wrapper's observation
 and deadline are not product behavior. Its sequence is:
 
 1. Bind a receiver on an ephemeral loopback port and share its address with an
@@ -780,10 +831,10 @@ nonzero on timeout. Normal completion prints:
 PASS: native startup, HTTP 204, nearest 64x64 texture, framebuffer RGB(42,99,151), clean close/port release
 ```
 
-Historically, the smoke passed on the macOS development host, as did the then
+Historically, the Glow smoke passed on the macOS development host, as did the then
 20 normal tests and the separately requested native startup test, format,
-Clippy, and build checks. These are recorded implementation results, not a claim
-that the transparency update passed the native smoke. The
+Clippy, and build checks. The post-v0.1.4 production WGPU smoke also passed as
+recorded above; neither run alone establishes compositor transparency. The
 smoke uses its own test sender, **not the actual external Gentle Emote sender**,
 and does not use production port 8001.
 
@@ -871,9 +922,11 @@ whole-physical-pixel policy (`assert_whole_physical_pixels`). Command values
 themselves are exact f32 and unaffected by viewport rounding. Rendering, fit
 helpers, receiving, and clock behavior are unchanged.
 
-## Final manual verification — still outstanding
+## Manual verification — remaining scope
 
-Use this checklist to gather missing evidence, not as a record of completed work:
+Local macOS production WGPU transparency with sender alpha preservation is
+human-confirmed above; it is no longer pending acceptance. Use this checklist
+for the remaining detailed checks, not as evidence that every item was exercised:
 
 - [ ] Launch the production app with `cargo run` in a graphical session, with
   port 8001 free. Confirm the waiting message and controls are readable.
@@ -901,7 +954,7 @@ Use this checklist to gather missing evidence, not as a record of completed work
   behavior. Check primary drag, right-click avatar-size slider steps (x1–x5), and
   Exit. Confirm menu selection does not start a drag and exit releases port 8001.
 - [ ] On a contrasting desktop background, confirm the initial window surface is
-  opaque black. Right-click → **Transparent background**: check that unused space
+  black at 45% transparency. With **Transparent background** checked, check that unused space
   and the added one-source-row top padding reveal the desktop, fully transparent
   PNG pixels reveal it, and partial-alpha pixels blend with it. Confirm opaque
   black PNG pixels, including the sender's bottom gap, remain black; the full
@@ -922,17 +975,18 @@ Use this checklist to gather missing evidence, not as a record of completed work
   frame. Check there is no stale opaque surface, image loss, or unintended
   move/resize/close. Check menu readability and primary drag in both modes; the
   transparent surface must not become click-through. Restart and confirm the
-  option resets to off with an opaque black surface.
+  option resets to checked at 45% transparency.
 - [ ] Repeat applicable build/run and human window checks on Windows and Linux;
   record OS, graphics backend, and display scale. On Wayland, record compositor
   support/policy for topmost placement, native moves, and desktop alpha rather
   than promising them. Record whether transparency is supported by each tested
   backend/compositor; headless checks cannot establish it.
 
-Eframe/egui 0.37.0 with Glow is the implementation choice; X11 and Wayland source
-backends are enabled. macOS, Windows, and Linux are **source/build targets**.
-Native graphical execution evidence is recorded only for macOS; the transparency
-update's headless tests also passed on Windows. A framebuffer pixel proves
+Eframe/egui 0.37.0 uses WGPU on macOS and Glow on Windows/Linux; X11 and
+Wayland source backends are enabled. macOS is locally tested and compatible;
+Windows and Linux remain source/build targets with no execution this session.
+Historical Windows headless, build and native-smoke results are recorded above.
+A framebuffer pixel proves
 part of the native rendering pipeline, not topmost placement, successful OS
 dragging, native menu usability, every display scale, or cross-platform parity.
 

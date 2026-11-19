@@ -2612,6 +2612,15 @@ fn size_slider_applies_to_each_avatar_and_count_changes_keep_chosen_size() {
 }
 
 #[test]
+fn native_renderer_matches_platform() {
+    let options = native_options();
+    #[cfg(target_os = "macos")]
+    assert_eq!(options.renderer, eframe::Renderer::Wgpu);
+    #[cfg(not(target_os = "macos"))]
+    assert_eq!(options.renderer, eframe::Renderer::Glow);
+}
+
+#[test]
 fn fixed_square_frameless_topmost_options() {
     let options = native_options();
     assert_eq!(options.viewport.inner_size, Some(Vec2::splat(192.0)));
@@ -2623,6 +2632,42 @@ fn fixed_square_frameless_topmost_options() {
     );
     // Native capability is enabled; painting still defaults to opaque black.
     assert_eq!(options.viewport.transparent, Some(true));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn transparent_macos_root_disables_native_shadow() {
+    let options = native_options();
+    assert_eq!(options.viewport.transparent, Some(true));
+    assert_eq!(options.viewport.has_shadow, Some(false));
+}
+
+#[test]
+fn fully_transparent_waiting_surface_paints_only_text_and_clears_alpha() {
+    let (ctx, mut app, _) = setup_defaults();
+    set_background_transparency(&ctx, &mut app, 1.0, true);
+    // Consume the child's final Escape/close pass before checking the root alone.
+    menu::take();
+    let output = step(&ctx, &mut app, vec![]);
+    assert!(menu::take_optional().is_none(), "options must be dismissed");
+    assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Text(text) if text.galley.text().starts_with("Waiting for emote"))));
+    assert!(
+        output
+            .shapes
+            .iter()
+            .all(|shape| matches!(&shape.shape, egui::Shape::Noop | egui::Shape::Text(_))),
+        "the waiting root must paint no background or artwork at 100% transparency"
+    );
+    assert_eq!(
+        eframe::App::clear_color(&app, &egui::Visuals::default()),
+        [0.0; 4]
+    );
+    assert!(
+        output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .is_empty()
+    );
 }
 
 #[test]

@@ -225,13 +225,21 @@ fn paint_clock_image(
 }
 
 pub fn native_options() -> eframe::NativeOptions {
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size(Vec2::splat(192.0))
+        .with_decorations(false)
+        .with_resizable(false)
+        .with_transparent(true)
+        .with_window_level(egui::WindowLevel::AlwaysOnTop);
+    // Disable native shadows on the macOS production overlay to avoid ghosting.
+    // This alone cannot fix opaque sender pixels or ensure compositor transparency.
+    #[cfg(target_os = "macos")]
+    let viewport = viewport.with_has_shadow(false);
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size(Vec2::splat(192.0))
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_transparent(true)
-            .with_window_level(egui::WindowLevel::AlwaysOnTop),
+        viewport,
+        #[cfg(target_os = "macos")]
+        renderer: eframe::Renderer::Wgpu,
+        #[cfg(not(target_os = "macos"))]
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     }

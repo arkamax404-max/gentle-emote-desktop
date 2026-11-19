@@ -1,4 +1,5 @@
 //! Run on the main thread in a graphical session: cargo run --example native_smoke.
+//! Uses the production renderer: WGPU on macOS, Glow elsewhere.
 //! Only this wrapper has a deadline and framebuffer observation, not the product.
 use eframe::egui::{self, ViewportCommand};
 use gentle_emote_desktop::{
