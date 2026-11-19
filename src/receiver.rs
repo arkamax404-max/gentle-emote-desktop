@@ -43,6 +43,14 @@ impl LatestFrame {
         self.0.lock().expect("frame lock poisoned").latest()
     }
 
+    /// Queue a focus request for a currently active session, never a legacy tile.
+    pub fn request_focus(&self, session: &str) -> Option<String> {
+        self.0
+            .lock()
+            .expect("frame lock poisoned")
+            .request_focus(session, Instant::now())
+    }
+
     /// Read presentation state atomically, without holding the lock during rendering.
     /// The only name-bearing accessor: titles, silence and `show_clock` come from one
     /// observation, so a caller cannot read a clock title that skips the silence rule.
@@ -186,6 +194,7 @@ async fn serve(
     // clients to cooperate or for their deadlines to expire.
     connections.abort_all();
     while connections.join_next().await.is_some() {}
+    latest.0.lock().expect("frame lock poisoned").stop_focus();
 }
 
 type Reply = Response<Full<Bytes>>;
@@ -252,6 +261,13 @@ async fn handle(
     } else {
         None
     };
+    // Optional ACKs never cause a policy error. Duplicate, non-ASCII and
+    // malformed values are ignored, and only an accepted request may consume one.
+    let ack = (headers.get_all("x-emote-action-ack").iter().count() == 1)
+        .then(|| headers.get("x-emote-action-ack")?.to_str().ok())
+        .flatten()
+        .filter(|value| valid_id(value))
+        .map(str::to_owned);
     let close = path == "/emote/close";
     // Image metadata is validated before the body, but committed only after
     // decode and the atomic lifecycle guards. Lifecycle endpoints ignore it.
@@ -306,31 +322,52 @@ async fn handle(
     };
     // Decode and await bodies without holding the publication mutex. Sequence,
     // closed-stream and capacity checks happen atomically here, after decoding.
+    let mut response = reply(S::NO_CONTENT, "");
     let changed = {
         let mut registry = latest.0.lock().expect("frame lock poisoned");
         if let Some((session, stream, sequence)) = identity {
-            registry.apply_named(
+            match registry.apply_request(
                 &session,
                 &stream,
                 sequence,
                 event,
                 project_name,
+                ack.as_deref(),
                 Instant::now(),
-            )
+            ) {
+                Err(_) => return Ok(reply(S::TOO_MANY_REQUESTS, "session limit reached\n")),
+                Ok(None) => false,
+                Ok(Some(applied)) => {
+                    if let Some(id) = applied.focus {
+                        let headers = response.headers_mut();
+                        headers.insert(
+                            "x-emote-action",
+                            hyper::header::HeaderValue::from_static("focus"),
+                        );
+                        headers.insert(
+                            "x-emote-action-id",
+                            id.parse().expect("generated ASCII action ID"),
+                        );
+                        headers.insert(
+                            "x-emote-session-id",
+                            session.parse().expect("validated session ID"),
+                        );
+                    }
+                    applied.changed
+                }
+            }
         } else {
             let Event::Frame(frame, state) = event else {
                 unreachable!()
             };
             registry.publish_legacy_named(frame, state, project_name);
-            Ok(true)
+            true
         }
     };
-    match changed {
-        Err(_) => return Ok(reply(S::TOO_MANY_REQUESTS, "session limit reached\n")),
-        Ok(true) => repaint(),
-        Ok(false) => {}
+    if changed {
+        repaint();
     }
-    Ok(reply(S::NO_CONTENT, ""))
+    Ok(response)
 }
 
 // Match the existing producer's encodeProjectName/JavaScript string bound.
@@ -389,13 +426,6 @@ fn session_headers(headers: &hyper::HeaderMap) -> Option<(String, String, u64)> 
     };
     let id = one("x-emote-session-id")?;
     let stream = one("x-emote-stream-id")?;
-    let valid_id = |value: &str| {
-        !value.is_empty()
-            && value.len() <= 128
-            && value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
-    };
     let sequence = one("x-emote-sequence")?;
     if !valid_id(id)
         || !valid_id(stream)
@@ -405,6 +435,14 @@ fn session_headers(headers: &hyper::HeaderMap) -> Option<(String, String, u64)> 
         return None;
     }
     Some((id.into(), stream.into(), sequence.parse().ok()?))
+}
+
+fn valid_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
 }
 
 fn decode(bytes: &[u8]) -> Option<Frame> {

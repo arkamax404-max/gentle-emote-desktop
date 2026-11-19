@@ -247,6 +247,7 @@ pub struct EmoteApp {
     clocks: HashMap<CardId, ClockTexture>,
     presentation: CardPresentation,
     menu_target: Option<CardId>,
+    focus_pressed: Option<CardId>,
     /// Avatar-size slider step x1..x5: the avatar's 64-point image renders at
     /// that many points per source texel, and the canvas derives from that
     /// composition (image plus its one separation row) plus the visible
@@ -277,6 +278,7 @@ impl EmoteApp {
             clocks: HashMap::new(),
             presentation: CardPresentation::default(),
             menu_target: None,
+            focus_pressed: None,
             size_step: 2,
             applied_size: Vec2::splat(192.0),
             background_opacity: 55,
@@ -624,7 +626,63 @@ impl EmoteApp {
             ui.ctx()
                 .request_repaint_after(Duration::from_millis(ANIMATION_PERIOD_MS));
         }
+        // Use the same identity/hit geometry as the menu, but remember the
+        // press identity: the full-surface Response alone cannot distinguish
+        // pressing one card and releasing over a neighbor. Queue only on release.
+        let hit_card = |pos: egui::Pos2| {
+            card_hits
+                .iter()
+                .find(|(_, rect)| rect.contains(pos))
+                .map(|(id, _)| id.clone())
+        };
         let ctx = ui.ctx().clone();
+        if ctx.input(|input| input.pointer.button_pressed(PointerButton::Primary)) {
+            self.focus_pressed = if !self.menu_open
+                && (response.is_pointer_button_down_on()
+                    || response.clicked_by(PointerButton::Primary))
+            {
+                // press_origin may already be gone when press+release arrive in
+                // one native input batch; retain the actual press event position.
+                ctx.input(|input| {
+                    input.events.iter().rev().find_map(|event| match event {
+                        egui::Event::PointerButton {
+                            pos,
+                            button: PointerButton::Primary,
+                            pressed: true,
+                            ..
+                        } => Some(*pos),
+                        _ => None,
+                    })
+                })
+                .and_then(hit_card)
+                .filter(|card| {
+                    matches!(card, CardId::Session(id) if snapshots.iter().any(|snapshot|
+                    snapshot.active && snapshot.session_id.as_ref() == Some(id)))
+                })
+            } else {
+                None
+            };
+        }
+        if response.drag_started_by(PointerButton::Primary) || self.menu_open {
+            self.focus_pressed = None;
+        }
+        if ctx.input(|input| input.pointer.button_released(PointerButton::Primary)) {
+            let pressed = self.focus_pressed.take();
+            if response.clicked_by(PointerButton::Primary)
+                && !self.menu_open
+                && let Some(CardId::Session(id)) = pressed
+                && response.interact_pointer_pos().and_then(hit_card)
+                    == Some(CardId::Session(id.clone()))
+                && snapshots.iter().any(|snapshot| {
+                    snapshot.active && snapshot.session_id.as_deref() == Some(id.as_str())
+                })
+            {
+                self.latest.request_focus(&id);
+            }
+        }
+        if !ctx.input(|input| input.pointer.button_down(PointerButton::Primary)) {
+            self.focus_pressed = None;
+        }
         let menu_id = egui::ViewportId::from_hash_of("emote-options");
         let opening = response.secondary_clicked();
         if opening {

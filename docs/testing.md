@@ -6,6 +6,67 @@ external sender each establish different things. The real sender transport check
 below passed; it did not capture each real frame's framebuffer. Windows/Linux
 execution and human visual OS-behavior checks remain outstanding.
 
+## Desktop focus-request handoff (T1, S1–S7)
+
+The `focus_*` checks use only ephemeral receivers and headless egui; no desktop
+process is launched or closed, no real user configuration is used, and no sender,
+terminal, emulator, LED or serial code is exercised. Run in the isolated target
+because a running desktop can lock other build directories:
+
+```sh
+cargo test --offline --config build.incremental=false --target-dir target/focus-check --test receiver focus_ -- --nocapture
+cargo test --offline --config build.incremental=false --target-dir target/focus-check --test window focus_ -- --nocapture
+cargo test --offline --config build.incremental=false --target-dir target/focus-check --lib focus_ -- --nocapture
+cargo test --offline --config build.incremental=false --target-dir target/focus-check --test receiver
+cargo test --offline --config build.incremental=false --target-dir target/focus-check --test sessions
+cargo test --offline --config build.incremental=false --target-dir target/focus-check --test window menu
+cargo test --offline --config build.incremental=false --target-dir target/focus-check --test window primary_drag_requests_native_move -- --exact
+cargo test --offline --config build.incremental=false --target-dir target/focus-check --test window card_
+```
+
+Observed initial RED (exit 101): receiver focus filter **0 passed / 6 failed** at
+the queue scaffold, window focus filter **0 passed / 3 failed** (two absent focus
+assertions and one test-helper consumption error), and registry focus filter
+**0 passed / 2 failed** at the queue scaffold. The menu fixture was corrected by
+rendering a new child pass before consuming its output again. These initial
+failures establish missing queue/click behavior, not independent RED observations
+of every downstream ACK/ID assertion. Additional actual boundary RED checks failed
+one test each (exit 101): a press+release in one input batch did not queue, and
+an accepted heartbeat just after lease expiry but before the timer tick still
+returned the pending ID. Both were corrected and subsequently passed.
+
+Final focused GREEN (exit 0): **8 receiver, 4 window and 5 injected-time registry**
+tests. HTTP assertions cover all three optional headers, exact case-preserved
+session identity, 204/empty body and existing Content-Type/Connection headers,
+idle heartbeat redelivery, per-session isolation, exact ACK on frames/heartbeats,
+old/malformed/unknown/duplicate ACK, unique bounded ASCII IDs across clicks and
+receiver instances, error/replay/retired/legacy suppression, close/takeover and
+shutdown. Delayed-body probes cover an old ACK surviving a newer click and an
+old stream losing to takeover, while checking unchanged pixels/notification
+counts for ignored requests. Time-injected registry boundary tests use the same
+application seam as HTTP (not direct pending-storage inspection): delivery at
+5/10 seconds and one nanosecond before 15 seconds, expiry exactly at 15 seconds,
+lease expiry with and without a timer tick, inactive clicks, eviction/reintroduction
+and shutdown. Public registry preservation also checks that clicking changes
+neither pixels, lease nor sender sequence.
+
+Headless click checks cover separate and batched press/release, no request on
+press, new ID per click, normal and idle session cards, cross-card release,
+separators, legacy/global fallback, preserved primary StartDrag, secondary menu
+and menu-owned primary controls. The registry rejects inactive/elapsed leases;
+no 30-second UI sleep is used. No native OS focus or actual sender receipt is
+claimed. Cross-process restart uniqueness is provided by the time/process nonce
+construction, not a process-restart integration test.
+
+Preservation runs above all exited 0: **33 receiver**, **10 session**, **7 menu**,
+**1 primary drag**, and **10 card-filter** tests (filters overlap). No full
+unfiltered suite, native launch or lint run was attempted. The earlier full-suite
+timeout recorded below was not retried. Rustfmt was limited to the six changed
+Rust files; final whitespace/status checks are reported in the implementation
+handoff. This change exceeds the approximate 400-authored-line planning heuristic
+because it includes deterministic lifetime, public wire/UI tests and protocol docs;
+that heuristic was not used to compress or omit coverage.
+
 ## Default developer checks
 
 Run from the repository root with Rust 1.95 or newer and a native compiler/linker:

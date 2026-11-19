@@ -29,6 +29,35 @@ fn clock_frame(value: u8) -> Event {
 }
 
 #[test]
+fn focus_click_is_metadata_only_and_rejects_unknown_inactive_and_elapsed_leases() {
+    let mut r = SessionRegistry::default();
+    let now = Instant::now();
+    assert!(r.request_focus("unknown", now).is_none());
+    assert!(r.snapshots().is_empty());
+    r.apply("a", "s", 1, frame(1), now).unwrap();
+    let saved = r.latest().unwrap();
+    let id = r
+        .request_focus("a", now + Duration::from_secs(29))
+        .expect("live click");
+    assert!(!id.is_empty());
+    assert!(Arc::ptr_eq(&saved, &r.latest().unwrap()));
+    assert!(r.snapshots()[0].active);
+    // Clicking neither renews the lease nor consumes sender sequence.
+    assert!(r.request_focus("a", now + SESSION_TIMEOUT).is_none());
+    assert!(r.expire(now + SESSION_TIMEOUT));
+    assert!(!r.snapshots()[0].active);
+    assert!(r.request_focus("a", now + SESSION_TIMEOUT).is_none());
+    assert!(
+        r.apply("a", "s", 2, Event::Heartbeat, now + SESSION_TIMEOUT)
+            .unwrap()
+    );
+    r.apply("a", "s", 3, Event::Close, now + SESSION_TIMEOUT)
+        .unwrap();
+    assert!(r.request_focus("a", now + SESSION_TIMEOUT).is_none());
+    assert!(Arc::ptr_eq(&saved, &r.latest().unwrap()));
+}
+
+#[test]
 fn ordered_isolation_retention_reactivation_and_close() {
     let mut r = SessionRegistry::default();
     let now = Instant::now();

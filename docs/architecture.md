@@ -73,6 +73,37 @@ normal loses its close action. Global controls remain global; primary drag retai
 the original full-surface native move target. All order/dismissal state belongs to
 `EmoteApp` only and never enters the independently persisted RGB store.
 
+## UI → receiver focus handoff
+
+Primary clicks use the existing full-surface egui response and the same allocated
+card rectangles / `CardId` identities as the context menu. The app remembers the
+press identity, cancels it on a primary drag, and queues only on a nondrag release
+over that same active `CardId::Session`. Native input batches containing both
+press and release are handled as well. Legacy, global fallback, separators,
+unused framed margins and inactive retained cards do nothing. The existing
+`StartDrag` command and secondary-click options path are unchanged; menu-owned
+presses cannot queue requests.
+
+`LatestFrame::request_focus` holds the shared registry mutex briefly, validates
+the session's active lease and replaces its single pending request with a new
+instance-nonce / checked-counter ID and monotonic click timestamp. Clicking does
+not change frames, sequence, ordering, contact timestamps or repaint counters.
+There is no UI-to-worker channel, unbounded queue, polling or persisted action.
+
+After normal HTTP validation and PNG decode, the receiver applies ACK and chooses
+optional focus response headers under that same mutex. The internal application
+result distinguishes an accepted unchanged heartbeat from ignored traffic; the
+original public registry `apply` still reports only visible changes. This avoids
+delivering to replays or accepting their ACKs. Decode/body waits remain outside
+the lock and repaint remains after unlock. A newer click survives an older ACK,
+including a frame whose body was delayed across that click. Requests expire at
+15 seconds from click (not delivery), and close, lease expiry, stream takeover,
+eviction or shutdown clear them. Shutdown also disables clicks through retained
+`LatestFrame` clones while leaving pixel snapshots readable. See the
+[wire contract](protocol.md#desktop-focus-requests-optional-response-headers).
+The sender owns Herdr panel focus; the desktop never controls Windows Terminal
+or emulator tabs and never touches LED/serial transports.
+
 ## Dedicated user-global background RGB
 
 `src/background_color.rs` is a std-only store, separate from the receiver and

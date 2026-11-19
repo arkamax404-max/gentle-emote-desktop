@@ -173,6 +173,45 @@ Repaint callbacks run outside the mutex. Accepted frames and visible lifecycle
 changes notify; ordinary heartbeats and ignored requests do not. Snapshot pixel
 Arcs remain valid after replacement or shutdown.
 
+#### Desktop focus requests (optional response headers)
+
+A primary click without dragging on an active session card queues a focus request
+for that exact session ID (including an idle session's clock card). The next
+**accepted current-stream** `POST /emote` or `POST /emote/heartbeat` for that
+session returns these optional headers:
+
+```http
+X-Emote-Action: focus
+X-Emote-Action-Id: <request-id>
+X-Emote-Session-Id: <exact requesting session id>
+```
+
+Success remains **204 with an empty body**, the existing Content-Type and
+Connection headers are unchanged, and existing error statuses/bodies are unchanged.
+Old senders may ignore the additional headers. No headers are sent when nothing
+is pending, on close, errors, ignored/replayed/retired-stream traffic, or legacy
+requests without a session ID. An accepted heartbeat can deliver a request while
+the sender is idle; keep sending those every 5 seconds.
+
+Send `X-Emote-Action-Ack: <request-id>` on the next frame or heartbeat. An exact
+matching ACK means **received / do not retry**, not successful focus. ACK handling
+and response selection happen atomically after body/decode and the same session,
+stream, sequence and capacity guards as publication. Rejected or ignored input
+cannot clear a pending request. A new click replaces the pending request with a
+new ID; an old ACK cannot clear that newer click. Unknown, malformed or duplicate
+ACK headers are ignored, never an application 400. HTTP parser/size limits still
+apply. Senders should deduplicate repeated delivery by request ID.
+
+There is at most one pending request per bounded known session record. Request
+IDs match `^[A-Za-z0-9_.:-]{1,128}$`, using an instance nonce and checked click
+counter; they are not reused across clicks or desktop restarts. A request expires
+**15 seconds after its click**, using monotonic time; redelivery does not extend
+that deadline. Accepted close, lease expiry, stream takeover, record eviction and
+receiver shutdown clear it. Legacy, global fallback and inactive/retained cards
+cannot request focus. The desktop only hands off an intent: it does not activate
+Windows Terminal, select emulator tabs, create an endpoint or polling channel,
+or persist requests. A compatible sender owns focusing its Herdr TUI panel.
+
 #### Sender-declared clock state
 
 A session (or the legacy singleton) whose latest accepted frame carries

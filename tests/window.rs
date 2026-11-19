@@ -2954,7 +2954,12 @@ fn card_reorder_targets_identity_survives_updates_and_appends_new_cards() {
         session_request(address, "", 1, "emote", 168);
         assert_eq!(
             avatar_names(&step(&ctx, &mut app, vec![])),
-            ["emote-session:b", "emote-session:a", "emote-session:c", "emote"]
+            [
+                "emote-session:b",
+                "emote-session:a",
+                "emote-session:c",
+                "emote"
+            ]
         );
         card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
         card_action(&ctx, &mut app, previous); // disabled at the first boundary
@@ -2966,7 +2971,12 @@ fn card_reorder_targets_identity_survives_updates_and_appends_new_cards() {
         card_action(&ctx, &mut app, next);
         assert_eq!(
             avatar_names(&step(&ctx, &mut app, vec![])),
-            ["emote-session:a", "emote-session:b", "emote-session:c", "emote"]
+            [
+                "emote-session:a",
+                "emote-session:b",
+                "emote-session:c",
+                "emote"
+            ]
         );
     }
 }
@@ -3062,7 +3072,10 @@ fn card_global_fallback_dismissal_is_distinct_and_resets_when_inactive() {
     card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
     card_action(&ctx, &mut app, "Close clock");
     session_request(address, "b", 1, "emote", 84);
-    assert_eq!(avatar_names(&step(&ctx, &mut app, vec![])), ["emote-session:b"]);
+    assert_eq!(
+        avatar_names(&step(&ctx, &mut app, vec![])),
+        ["emote-session:b"]
+    );
     session_request(address, "b", 2, "emote/close", 0);
     assert_eq!(clock_meshes(&step(&ctx, &mut app, vec![])).len(), 1);
 }
@@ -3172,7 +3185,10 @@ fn card_gap_waiting_and_framed_background_menus_have_only_global_controls() {
     let p = Pos2::new(1.0, 1.0);
     let size = Vec2::new(192.0, 600.0);
     for events in [
-        vec![Event::PointerMoved(p), button(p, PointerButton::Secondary, true)],
+        vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Secondary, true),
+        ],
         vec![button(p, PointerButton::Secondary, false)],
         vec![],
     ] {
@@ -3689,6 +3705,170 @@ fn primary_drag_requests_native_move() {
             .commands
             .contains(&ViewportCommand::StartDrag)
     );
+}
+
+fn focus_poll(address: std::net::SocketAddr, id: &str, seq: u64) -> Option<String> {
+    let mut socket = TcpStream::connect(address).unwrap();
+    write!(socket, "POST /emote/heartbeat HTTP/1.1\r\nHost: localhost\r\nX-Emote-Version: 1\r\nX-Emote-Session-Id: {id}\r\nX-Emote-Stream-Id: stream-{id}\r\nX-Emote-Sequence: {seq}\r\nContent-Length: 0\r\n\r\n").unwrap();
+    let mut response = String::new();
+    socket.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 204 "), "{response}");
+    assert_eq!(response.split_once("\r\n\r\n").unwrap().1, "");
+    response.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.eq_ignore_ascii_case("x-emote-action-id")
+            .then(|| value.trim().to_owned())
+    })
+}
+
+fn primary_click(ctx: &egui::Context, app: &mut EmoteApp, p: Pos2) {
+    step(
+        ctx,
+        app,
+        vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Primary, true),
+        ],
+    );
+    let output = step(ctx, app, vec![button(p, PointerButton::Primary, false)]);
+    assert!(
+        !output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&ViewportCommand::StartDrag)
+    );
+}
+
+#[test]
+fn focus_click_queues_on_release_for_the_same_active_card_including_idle() {
+    for clock in [false, true] {
+        let (ctx, mut app, address) = setup_defaults();
+        session_request_state(address, "a", 1, "emote", 42, clock.then_some("clock"));
+        session_request(address, "b", 1, "emote", 84);
+        step(&ctx, &mut app, vec![]);
+        let p = Pos2::new(50.0, 40.0);
+        step(
+            &ctx,
+            &mut app,
+            vec![
+                Event::PointerMoved(p),
+                button(p, PointerButton::Primary, true),
+            ],
+        );
+        assert!(
+            focus_poll(address, "a", 2).is_none(),
+            "never queue on press"
+        );
+        step(
+            &ctx,
+            &mut app,
+            vec![button(p, PointerButton::Primary, false)],
+        );
+        let first = focus_poll(address, "a", 3).expect("release queues focus");
+        assert!(focus_poll(address, "b", 2).is_none());
+        primary_click(&ctx, &mut app, p);
+        assert_ne!(
+            focus_poll(address, "a", 4).unwrap(),
+            first,
+            "latest click replaces pending ID"
+        );
+    }
+}
+
+#[test]
+fn focus_click_in_one_input_batch_still_queues_only_on_release() {
+    let (ctx, mut app, address) = setup_defaults();
+    session_request(address, "a", 1, "emote", 42);
+    step(&ctx, &mut app, vec![]);
+    let p = Pos2::new(50.0, 40.0);
+    step(
+        &ctx,
+        &mut app,
+        vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Primary, true),
+            button(p, PointerButton::Primary, false),
+        ],
+    );
+    assert!(focus_poll(address, "a", 2).is_some());
+}
+
+#[test]
+fn focus_drag_and_secondary_menu_preserve_controls_without_queueing() {
+    let (ctx, mut app, address) = setup_defaults();
+    session_request(address, "a", 1, "emote", 42);
+    step(&ctx, &mut app, vec![]);
+    let p = Pos2::new(20.0, 20.0);
+    step(
+        &ctx,
+        &mut app,
+        vec![
+            Event::PointerMoved(p),
+            button(p, PointerButton::Primary, true),
+        ],
+    );
+    let moved = p + Vec2::splat(30.0);
+    let drag = step(&ctx, &mut app, vec![Event::PointerMoved(moved)]);
+    assert!(
+        drag.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&ViewportCommand::StartDrag)
+    );
+    step(
+        &ctx,
+        &mut app,
+        vec![button(moved, PointerButton::Primary, false)],
+    );
+    assert!(focus_poll(address, "a", 2).is_none());
+    card_menu(&ctx, &mut app, p);
+    assert!(painted_label(&menu::take(), "Avatar size").is_some());
+    step(&ctx, &mut app, vec![]);
+    // Menu-owned primary presses cannot queue a session focus request.
+    card_action(&ctx, &mut app, "No frame");
+    assert!(focus_poll(address, "a", 3).is_none());
+}
+
+#[test]
+fn focus_cross_card_release_gaps_legacy_and_fallback_do_not_queue() {
+    let (ctx, mut app, address) = setup_defaults();
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "b", 1, "emote", 84);
+    step(&ctx, &mut app, vec![]);
+    // Points straddle the five-point gap but remain below egui's drag threshold.
+    let press = Pos2::new(50.0, 93.49);
+    let release = Pos2::new(50.0, 98.51);
+    step(
+        &ctx,
+        &mut app,
+        vec![
+            Event::PointerMoved(press),
+            button(press, PointerButton::Primary, true),
+        ],
+    );
+    step(
+        &ctx,
+        &mut app,
+        vec![
+            Event::PointerMoved(release),
+            button(release, PointerButton::Primary, false),
+        ],
+    );
+    primary_click(&ctx, &mut app, Pos2::new(50.0, 96.0));
+    assert!(focus_poll(address, "a", 2).is_none());
+    assert!(focus_poll(address, "b", 2).is_none());
+    // Establish the positive control before testing non-session surfaces.
+    primary_click(&ctx, &mut app, Pos2::new(50.0, 40.0));
+    assert!(focus_poll(address, "a", 3).is_some());
+    let (ctx, mut app, address) = setup_defaults();
+    session_request(address, "a", 1, "emote", 42);
+    session_request(address, "a", 2, "emote/close", 0);
+    step(&ctx, &mut app, vec![]);
+    primary_click(&ctx, &mut app, Pos2::new(50.0, 50.0));
+    session_request(address, "a", 0, "emote", 42); // closed stream remains ignored
+    assert!(focus_poll(address, "a", 3).is_none());
+    session_request(address, "", 1, "emote", 84);
+    step(&ctx, &mut app, vec![]);
+    primary_click(&ctx, &mut app, Pos2::new(50.0, 50.0));
+    assert!(focus_poll(address, "a", 4).is_none());
 }
 
 #[test]

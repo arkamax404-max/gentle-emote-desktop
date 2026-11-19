@@ -34,6 +34,7 @@ Exact OS error codes and text are host-specific.
 | Interaction | Result |
 | --- | --- |
 | Start with no sender | Readable waiting message and control hints |
+| Primary click on an active session card | Queue a focus request for that session's Herdr TUI panel; a compatible sender receives it on its next accepted frame or idle heartbeat |
 | Primary-button drag | Ask the OS to move the window |
 | Right-click anywhere | Open a separate options window: avatar-size slider with five steps x1–x5 (the avatar's 64-point image renders at that many points per source texel, x2 initial) |
 | Right-click → Transparent background | Checked initially at 45% transparency (opacity 55), with the slider enabled; uncheck to reset to opaque (0%) and disable the slider |
@@ -45,6 +46,16 @@ Exact OS error codes and text are host-specific.
 | Right-click a card → Move left / Move right | Move that card one visible position in Horizontal stacking; end positions are disabled |
 | Right-click a clock card → Close clock | Hide only this clock until its identity receives an ordinary image; the desktop keeps receiving |
 | Right-click → Exit | Close the window and shut down the owned receiver |
+
+A focus click requires press and release on the same active session card without
+dragging; session clock cards count too. It queues on release, never on press.
+Legacy cards without a session ID, global fallback clocks, inactive retained
+cards, separators and unused framed margins do nothing. Each click replaces that
+session's pending request with a new ID. Delivery retries until an exact receipt
+ACK or 15 seconds from the click; close, lease expiry, stream takeover, eviction
+and shutdown clear it. The desktop does not focus Windows Terminal or select
+emulator tabs itself. Old senders may ignore the optional response headers;
+HTTP success remains 204 with no body. See the [focus wire contract](docs/protocol.md#desktop-focus-requests-optional-response-headers).
 
 Card order and clock dismissals last only while this desktop instance is open;
 newly discovered cards append after existing cards, even when updates arrive.

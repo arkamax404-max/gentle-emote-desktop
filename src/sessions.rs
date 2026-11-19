@@ -2,11 +2,15 @@
 use crate::receiver::Frame;
 use std::{
     collections::{HashSet, VecDeque},
-    sync::Arc,
-    time::{Duration, Instant},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 pub const SESSION_TIMEOUT: Duration = Duration::from_secs(30);
+pub const FOCUS_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Accepted frames and heartbeats are the only contact signals, so a clock tile
 /// stops presenting its project name well before the lifecycle lease expires.
@@ -59,6 +63,17 @@ pub struct ClockTile {
 #[derive(Debug, PartialEq, Eq)]
 pub struct CapacityError;
 
+/// `None` from apply_request means ignored, not an accepted unchanged heartbeat.
+pub(crate) struct Applied {
+    pub changed: bool,
+    pub focus: Option<String>,
+}
+
+struct PendingFocus {
+    id: String,
+    clicked: Instant,
+}
+
 struct Session {
     id: String,
     stream: String,
@@ -70,11 +85,11 @@ struct Session {
     active: bool,
     closed: bool,
     seen: Instant,
+    focus: Option<PendingFocus>,
 }
 
 /// Pure monotonic-time state machine; networking supplies validated IDs and decoded frames.
 /// A single instance lives behind the receiver's single publication mutex.
-#[derive(Default)]
 pub struct SessionRegistry {
     sessions: Vec<Session>,
     legacy: Option<Arc<Frame>>,
@@ -83,8 +98,63 @@ pub struct SessionRegistry {
     latest: Option<Arc<Frame>>,
     retained: Option<SessionSnapshot>,
     clock_after_close: bool,
+    focus_nonce: String,
+    focus_counter: u64,
+    focus_stopped: bool,
+}
+impl Default for SessionRegistry {
+    fn default() -> Self {
+        // Time + process + instance distinguish restarts and simultaneous registries;
+        // the checked per-instance counter below never wraps or reuses a click ID.
+        static INSTANCES: AtomicU64 = AtomicU64::new(0);
+        let instance = INSTANCES
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+            .expect("focus instance counter exhausted");
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        Self {
+            sessions: Vec::new(),
+            legacy: None,
+            legacy_state: SessionState::default(),
+            legacy_project_name: None,
+            latest: None,
+            retained: None,
+            clock_after_close: false,
+            focus_nonce: format!("{time:x}-{:x}-{instance:x}", std::process::id()),
+            focus_counter: 0,
+            focus_stopped: false,
+        }
+    }
 }
 impl SessionRegistry {
+    /// A UI click replaces only this live session's pending request. It never
+    /// renews contact, creates a record, changes ordering, or queues image work.
+    pub fn request_focus(&mut self, id: &str, now: Instant) -> Option<String> {
+        if self.focus_stopped {
+            return None;
+        }
+        let session = self.sessions.iter_mut().find(|s| {
+            s.id == id && s.active && now.saturating_duration_since(s.seen) < SESSION_TIMEOUT
+        })?;
+        let next = self.focus_counter.checked_add(1)?;
+        let id = format!("{}:{next}", self.focus_nonce);
+        self.focus_counter = next;
+        session.focus = Some(PendingFocus {
+            id: id.clone(),
+            clicked: now,
+        });
+        Some(id)
+    }
+
+    pub(crate) fn stop_focus(&mut self) {
+        self.focus_stopped = true;
+        for session in &mut self.sessions {
+            session.focus = None;
+        }
+    }
+
     pub fn latest(&self) -> Option<Arc<Frame>> {
         self.latest.clone()
     }
@@ -212,6 +282,22 @@ impl SessionRegistry {
         project_name: Option<String>,
         now: Instant,
     ) -> Result<bool, CapacityError> {
+        self.apply_request(id, stream, sequence, event, project_name, None, now)
+            .map(|outcome| outcome.is_some_and(|applied| applied.changed))
+    }
+
+    // ACK and response selection share the post-decode ordering/capacity guards.
+    // An ignored request must not consume ACK, sequence, lease or pending state.
+    pub(crate) fn apply_request(
+        &mut self,
+        id: &str,
+        stream: &str,
+        sequence: u64,
+        event: Event,
+        project_name: Option<String>,
+        ack: Option<&str>,
+        now: Instant,
+    ) -> Result<Option<Applied>, CapacityError> {
         let index = self.sessions.iter().position(|s| s.id == id);
         let is_frame = matches!(event, Event::Frame(..));
         if let Some(i) = index {
@@ -220,10 +306,10 @@ impl SessionRegistry {
                 || (s.stream == stream && (s.closed || sequence <= s.sequence))
                 || (s.stream != stream && !is_frame)
             {
-                return Ok(false);
+                return Ok(None);
             }
         } else if !is_frame {
-            return Ok(false);
+            return Ok(None);
         }
         let activates = !matches!(event, Event::Close);
         if activates
@@ -261,6 +347,7 @@ impl SessionRegistry {
                     active: false,
                     closed: false,
                     seen: now,
+                    focus: None,
                 });
                 self.sessions.len() - 1
             }
@@ -273,7 +360,18 @@ impl SessionRegistry {
                 s.retired.pop_front();
             }
             s.closed = false;
+            s.focus = None;
         }
+        if !activates
+            || now.saturating_duration_since(s.seen) >= SESSION_TIMEOUT
+            || s.focus.as_ref().is_some_and(|pending| {
+                now.saturating_duration_since(pending.clicked) >= FOCUS_TIMEOUT
+                    || ack == Some(pending.id.as_str())
+            })
+        {
+            s.focus = None;
+        }
+        let focus = s.focus.as_ref().map(|pending| pending.id.clone());
         s.sequence = sequence;
         s.seen = now;
         let changed = match event {
@@ -304,15 +402,21 @@ impl SessionRegistry {
             self.clock_after_close =
                 self.legacy.is_none() && !self.sessions.iter().any(|s| s.active);
         }
-        Ok(changed)
+        Ok(Some(Applied { changed, focus }))
     }
 
     /// Production calls this independently of image traffic; tests inject Instants.
     pub fn expire(&mut self, now: Instant) -> bool {
         let mut changed = false;
         for s in &mut self.sessions {
+            if s.focus.as_ref().is_some_and(|pending| {
+                now.saturating_duration_since(pending.clicked) >= FOCUS_TIMEOUT
+            }) {
+                s.focus = None;
+            }
             if s.active && now.saturating_duration_since(s.seen) >= SESSION_TIMEOUT {
                 s.active = false;
+                s.focus = None;
                 self.retained = Some(SessionSnapshot {
                     session_id: Some(s.id.clone()),
                     frame: s.frame.clone(),
@@ -326,6 +430,122 @@ impl SessionRegistry {
             self.clock_after_close = false;
         }
         changed
+    }
+}
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+
+    fn frame() -> Event {
+        Event::Frame(
+            Arc::new(Frame {
+                rgba: vec![0; 16384],
+            }),
+            SessionState::Normal,
+        )
+    }
+    fn pulse(r: &mut SessionRegistry, seq: u64, now: Instant) -> Option<String> {
+        r.apply_request("a", "s", seq, Event::Heartbeat, None, None, now)
+            .unwrap()
+            .expect("accepted pulse")
+            .focus
+    }
+
+    #[test]
+    fn focus_ttl_is_fifteen_seconds_from_click_not_redelivery() {
+        let mut r = SessionRegistry::default();
+        let now = Instant::now();
+        r.apply("a", "s", 0, frame(), now).unwrap();
+        let id = r.request_focus("a", now).expect("queue active session");
+        for (seq, seconds) in [(1, 5), (2, 10)] {
+            assert_eq!(
+                pulse(&mut r, seq, now + Duration::from_secs(seconds)),
+                Some(id.clone())
+            );
+        }
+        assert_eq!(
+            pulse(
+                &mut r,
+                3,
+                now + Duration::from_secs(15) - Duration::from_nanos(1)
+            ),
+            Some(id)
+        );
+        assert_eq!(pulse(&mut r, 4, now + Duration::from_secs(15)), None);
+        assert_eq!(pulse(&mut r, 5, now + Duration::from_secs(16)), None);
+    }
+
+    #[test]
+    fn focus_expired_lease_is_cleared_even_before_the_worker_tick() {
+        let mut r = SessionRegistry::default();
+        let now = Instant::now();
+        r.apply("a", "s", 0, frame(), now).unwrap();
+        r.request_focus("a", now + Duration::from_secs(29)).unwrap();
+        assert_eq!(pulse(&mut r, 1, now + SESSION_TIMEOUT), None);
+        assert!(r.snapshots()[0].active);
+    }
+
+    #[test]
+    fn focus_eviction_reintroduction_has_no_pending_request() {
+        let mut r = SessionRegistry::default();
+        let now = Instant::now();
+        r.apply("a", "s", 1, frame(), now).unwrap();
+        r.request_focus("a", now + Duration::from_secs(29)).unwrap();
+        r.expire(now + SESSION_TIMEOUT);
+        for n in 0..MAX_KNOWN_SESSIONS {
+            let id = format!("other{n}");
+            r.apply(&id, "s", 0, frame(), now + SESSION_TIMEOUT)
+                .unwrap();
+            r.apply(&id, "s", 1, Event::Close, now + SESSION_TIMEOUT)
+                .unwrap();
+        }
+        // Sequence zero succeeds only because the old identity was evicted.
+        let result = r
+            .apply_request(
+                "a",
+                "s",
+                0,
+                frame(),
+                None,
+                None,
+                now + Duration::from_secs(31),
+            )
+            .unwrap()
+            .expect("evicted identity reintroduced");
+        assert!(result.changed);
+        assert!(result.focus.is_none());
+        assert!(r.snapshots()[0].active);
+    }
+
+    #[test]
+    fn focus_shutdown_clears_and_disables_clicks_without_changing_snapshots() {
+        let mut r = SessionRegistry::default();
+        let now = Instant::now();
+        r.apply("a", "s", 0, frame(), now).unwrap();
+        r.request_focus("a", now).unwrap();
+        let saved = r.latest().unwrap();
+        r.stop_focus();
+        assert_eq!(pulse(&mut r, 1, now), None);
+        assert!(r.request_focus("a", now).is_none());
+        assert!(Arc::ptr_eq(&saved, &r.latest().unwrap()));
+        assert!(r.snapshots()[0].active);
+    }
+
+    #[test]
+    fn focus_lease_expiry_and_inactive_click_cannot_revive_pending() {
+        let mut r = SessionRegistry::default();
+        let now = Instant::now();
+        assert!(r.request_focus("unknown", now).is_none());
+        r.apply("a", "s", 0, frame(), now).unwrap();
+        let click = now + SESSION_TIMEOUT - Duration::from_secs(1);
+        r.request_focus("a", click)
+            .expect("queue before lease expiry");
+        assert!(r.expire(now + SESSION_TIMEOUT));
+        assert!(r.request_focus("a", now + SESSION_TIMEOUT).is_none());
+        assert_eq!(pulse(&mut r, 1, now + SESSION_TIMEOUT), None);
+        // Even if the worker has not ticked, an elapsed lease cannot be clicked.
+        assert!(r.request_focus("a", now + SESSION_TIMEOUT * 2).is_none());
     }
 }
 
