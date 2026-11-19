@@ -288,6 +288,9 @@ impl SessionRegistry {
 
     // ACK and response selection share the post-decode ordering/capacity guards.
     // An ignored request must not consume ACK, sequence, lease or pending state.
+    // These eight form one wire-request context; grouping them would churn the
+    // receiver call sites without changing behavior.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn apply_request(
         &mut self,
         id: &str,

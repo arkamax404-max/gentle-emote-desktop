@@ -45,7 +45,7 @@ pub fn decode(bytes: &[u8]) -> Option<[u8; 3]> {
         }
     }
     let mut rgb = [0; 3];
-    for (channel, pair) in rgb.iter_mut().zip(bytes[1..].chunks_exact(2)) {
+    for (channel, pair) in rgb.iter_mut().zip(bytes[1..].as_chunks::<2>().0) {
         *channel = nibble(pair[0])? * 16 + nibble(pair[1])?;
     }
     Some(rgb)
