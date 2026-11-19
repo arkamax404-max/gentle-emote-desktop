@@ -242,15 +242,12 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite contains **49 tests** (19 receiver, 4 session lifecycle,
-25 headless window, and 1 private shadow-policy unit test). The earlier popup
-update passed its 14 window tests, the shadow policy, and all 4 lifecycle tests.
-The frame update adds alpha/artwork checks and replaces the bevel geometry
-checks with frame-opening, texture reuse, and transparent/single-avatar checks. The
-full-suite attempt failed one receiver check with Windows `ConnectionAborted`
-(OS 10053); it was not rerun. See the testing guide for the recorded limits.
-The separate macOS native startup test is ignored by default. The testing guide documents its
-explicit invocation and the graphical `native_smoke` example.
+The default suite contains **120 tests** on Windows: 34 receiver, 56 headless
+window, 10 session lifecycle, 3 background-color store, 9 idle-clock image, and
+8 library unit tests (1 shadow-policy, 1 receiver display, 6 session helpers).
+The macOS-only native startup test is ignored by default and counted separately.
+See the [testing guide](docs/testing.md) for the exact breakdown, recorded
+limits, and the graphical `native_smoke` example.
 
 ## Platform status
 

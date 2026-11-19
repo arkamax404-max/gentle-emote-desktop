@@ -116,23 +116,24 @@ If Cargo is not on PATH on the development host, substitute
 `/Users/santiagoperez/.cargo/bin/cargo` for `cargo`. These instructions do not
 install tools, modify PATH, or change sender configuration.
 
-The current suite contains **49 non-ignored tests: 19 receiver, 4 session lifecycle,
-25 window, and 1 private shadow-policy unit test**. The earlier frame/compact-popup checks
-passed all 15 then-existing window tests and the shadow policy; the earlier lifecycle check
-passed 4/4. The most recent full-suite attempt failed one receiver test with
-Windows OS 10053; it was not rerun for this UI update. See the evidence below.
-On macOS, Cargo also lists one ignored native startup test; it is not part of
-those 49. On other platforms,
-that startup test is excluded by a target guard.
+The current suite contains **120 tests** on Windows: 34 receiver, 56 headless
+window, 10 session lifecycle, 3 background-color store, 9 idle-clock image, and
+8 library unit tests (1 shadow-policy, 1 receiver display, 6 session helpers).
+The macOS-only native startup test is ignored by default and counted separately;
+on other platforms that startup test is excluded by a target guard.
 A headless suite needs no running GUI, but still compiles native dependencies;
 Linux builds need suitable graphics/toolchain libraries.
 
 | Test file | What its passing tests establish |
 | --- | --- |
-| [`tests/receiver.rs`](../tests/receiver.rs), 19 | Real TCP/HTTP validation, exact status/body assertions, rejection preserving snapshot and notification count, byte/deadline/connection bounds, PNG normalization, publication ordering, snapshots, bind failures, and owned shutdown; includes three response-reader guards |
-| [`tests/window.rs`](../tests/window.rs), 33 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip with the 45%-transparency toggle-on default and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry with whole-physical-pixel scales and snapped edges at every supported `pixels_per_point` (documented fractional fallback below 64×65 physical pixels), no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
-| [`tests/sessions.rs`](../tests/sessions.rs), 4 | Deterministic registry lease/expiry, reactivation, isolation, retention, ordering, legacy compatibility, caps, and finite replay horizon |
+| [`tests/receiver.rs`](../tests/receiver.rs), 34 | Real TCP/HTTP validation, exact status/body assertions, rejection preserving snapshot and notification count, byte/deadline/connection bounds, PNG normalization, publication ordering, snapshots, bind failures, and owned shutdown; includes three response-reader guards |
+| [`tests/window.rs`](../tests/window.rs), 56 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip with the 45%-transparency toggle-on default and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry with whole-physical-pixel scales and snapped edges at every supported `pixels_per_point` (documented fractional fallback below 64×65 physical pixels), no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
+| [`tests/sessions.rs`](../tests/sessions.rs), 10 | Deterministic registry lease/expiry, reactivation, isolation, retention, ordering, legacy compatibility, caps, and finite replay horizon |
+| [`tests/background_color.rs`](../tests/background_color.rs), 3 | Strict lowercase `#rrggbb` persistence store with nested save/load round trips, black fallbacks, save errors and absolute-root policy |
+| [`tests/idle_clock_image.rs`](../tests/idle_clock_image.rs), 9 | Canonical pixel-clock golden comparison and session-header renderer checks |
 | [`src/app.rs`](../src/app.rs), 1 | Checkbox-driven opaque → transparent → opaque shadow policy; no native window or compositor is exercised |
+| [`src/receiver.rs`](../src/receiver.rs), 1 | Clock-silence display rule applied at the render seam |
+| [`src/sessions.rs`](../src/sessions.rs), 6 | Clock-title silence, focus lifetime and session-registry helpers |
 | [`tests/startup.rs`](../tests/startup.rs), 1 ignored on macOS | An explicitly launched production process reports an occupied fixed port and terminates as expected on that host |
 
 Receiver and headless window tests bind `127.0.0.1:0`: the OS chooses an
