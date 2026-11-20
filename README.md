@@ -62,6 +62,7 @@ Exact OS error codes and text are host-specific.
 | Right-click a card → Move up / Move down | Move that card one visible position in Vertical stacking; end positions are disabled |
 | Right-click a card → Move left / Move right | Move that card one visible position in Horizontal stacking; end positions are disabled |
 | Right-click a clock card → Close clock | Hide only this clock until its identity receives an ordinary image; the desktop keeps receiving |
+| Right-click a card titled exactly `TMP` → Close | Hide only this card (avatar or clock) until its session title changes from `TMP`; images and heartbeats do not reopen it |
 | Right-click → Exit | Close the window and shut down the owned receiver |
 
 A focus click requires press and release on the same active session card without
@@ -84,8 +85,17 @@ Right-click targets the actual card under the pointer, not its index or name.
 Clicks in separators, unused framed margins or the waiting surface show only
 global controls. Global size, color, transparency and stacking controls still affect
 all cards. Primary dragging still moves the window, never reorders cards.
-Only clocks can be closed this way (session clocks, the legacy clock, or the
-global fallback); ordinary avatar cards cannot be closed. Repeated clock images
+Ordinary avatar cards cannot be closed, except when their sender-provided session
+title is exactly `TMP` (case-sensitive, not an ID, prefix or substring). These
+cards always offer **Close**, including in clock mode and for legacy senders
+without an ID. Closing one hides only that identity locally while its observed
+title remains `TMP`, across ordinary images, clock images and heartbeats. A title
+change (including missing title) restores it, even in clock mode; restarting the
+desktop resets the dismissal. The raw title metadata controls this rule, not the
+clock's temporary stale-session display text.
+
+Other clocks offer **Close clock** (session clocks, the legacy clock, or the
+global fallback). Repeated clock images
 and heartbeats do not reopen a dismissed clock. An ordinary image restores that
 identity in its session-local order. Closing the last visible clock shows the
 initial 192×192 waiting surface, without exiting or immediately restoring a retained
