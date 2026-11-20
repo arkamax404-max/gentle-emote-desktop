@@ -83,6 +83,9 @@ class AuditTests(unittest.TestCase):
             self.assertEqual(summary["package_count"], self.package_count)
             self.assertEqual(summary["file_count"], self.file_count)
             self.assertEqual(summary["manifest_sha256"], hashlib.sha256((self.out / "manifest.json").read_bytes()).hexdigest())
+            self.assertTrue(summary['notice_inventory_complete'])
+            self.assertFalse(summary['legal_audit_complete'])
+            self.assertIsInstance(summary['license_exceptions'], list)
         return result
 
     def generate(self):
@@ -97,12 +100,249 @@ class AuditTests(unittest.TestCase):
         self.assertNotIn(str(self.base), json.dumps(manifest))
         self.assertEqual(manifest["targets"], TARGETS)
         package = manifest["packages"][0]
+        self.assertEqual(json.loads(self.invoke('--validate').stdout)['license_exceptions'], [])
         self.assertEqual(package["license"], "Apache-2.0 OR GPL-3.0-only")
         self.assertEqual(package["selected_licenses"], ["Apache-2.0"])
         self.assertEqual(package["targets"], TARGETS)
         self.assertEqual(len(package["files"]), 3)
         self.assertTrue(any("fonts/egui-icons.txt" in f["path"] for f in package["files"]))
         self.invoke("--validate")
+
+    def supplement_fixture(self, *, exception=False, release=False):
+        self.crate = self.base / 'cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/fonts-1.2.3'
+        self.crate.mkdir(parents=True)
+        self.env['CARGO_HOME'] = str(self.base / 'cargo-home')
+        (self.crate / 'Cargo.toml').write_text('fixture')
+        (self.crate / '.cargo_vcs_info.json').write_text(json.dumps({
+            'git': {'sha1': 'a' * 40}, 'path_in_vcs': 'crates/fonts'}))
+        package = self.metadata['packages'][1]
+        package.update(manifest_path=str(self.crate / 'Cargo.toml'),
+                       repository='https://github.com/example/fonts.git')
+        self.supplements = self.root / 'assets/macos-license-supplements'
+        (self.supplements / 'files').mkdir(parents=True)
+        data = b'Upstream original notice\n'
+        sha = hashlib.sha256(data).hexdigest()
+        (self.supplements / 'files' / sha).write_bytes(data)
+        self.supplement = {
+            'name': 'fonts', 'version': '1.2.3',
+            'license_expression': package['license'],
+            'repository': 'https://github.com/example/fonts',
+            'crate_revision': 'a' * 40, 'path_in_vcs': 'crates/fonts',
+            'notice_revision': 'a' * 40, 'provenance_kind': 'exact-crate-revision',
+            'files': [{'path': 'files/' + sha, 'sha256': sha,
+                       'upstream_url': 'https://github.com/example/fonts/blob/' + 'a' * 40 + '/LICENSE'}]}
+        if release:
+            self.supplement.update(provenance_kind='same-version-upstream-release',
+                                   notice_revision='b' * 40, release_tag='v1.2.3')
+            self.supplement['files'][0]['upstream_url'] = (
+                'https://github.com/example/fonts/blob/' + 'b' * 40 + '/LICENSE')
+        if exception:
+            package.update(name='dispatch', version='0.2.0', license='MIT')
+            self.supplement.update(name='dispatch', version='0.2.0', license_expression='MIT',
+                                   provenance_kind='declared-license-exception',
+                                   license_exception={'reason': 'No original notice; MIT declaration only',
+                                                      'legal_audit_complete': False})
+            self.supplement['files'][0]['role'] = 'license-declaration'
+            reference = b'Standard SPDX MIT reference, not an original copyright notice\n'
+            sha = hashlib.sha256(reference).hexdigest()
+            (self.supplements / 'files' / sha).write_bytes(reference)
+            self.supplement['files'].append({
+                'path': 'files/' + sha, 'sha256': sha, 'role': 'spdx-reference',
+                'upstream_url': 'https://github.com/spdx/license-list-data/blob/' +
+                                'c' * 40 + '/text/MIT.txt'})
+        self.file_count = len(self.supplement['files'])
+        self.save_metadata()
+        self.save_supplement()
+
+    def save_supplement(self):
+        (self.supplements / 'manifest.json').write_text(json.dumps({
+            'schema_version': 1, 'packages': [self.supplement]}))
+
+    def test_repository_subdirectory_url_normalizes_to_same_repository(self):
+        self.supplement_fixture()
+        self.metadata['packages'][1]['repository'] = 'https://github.com/example/fonts/tree/main/crates/fonts'
+        self.save_metadata()
+        self.generate()
+        self.invoke('--validate')
+
+    def test_supplement_exact_source_and_portable_registry(self):
+        self.supplement_fixture()
+        manifest = self.generate()
+        package = manifest['packages'][0]
+        self.assertEqual(package['notice_provenance'], self.supplement)
+        self.assertNotIn(str(self.base), json.dumps(manifest))
+        self.invoke('--validate')
+        # Existing shipped notices take precedence over supplements entirely.
+        (self.crate / 'LICENSE').write_text('shipped original notice\n')
+        self.out = self.base / 'shipped-audit'
+        self.assertNotIn('notice_provenance', self.generate()['packages'][0])
+
+    def test_supplement_missing_vcs_revision_repository_and_hash_fail_closed(self):
+        self.supplement_fixture()
+        self.supplement['crate_revision'] = 'b' * 40
+        self.save_supplement()
+        self.invoke(expected_error='supplement provenance mismatch: fonts@1.2.3')
+        self.supplement['crate_revision'] = 'a' * 40
+        self.supplement['repository'] = 'https://github.com/example/wrong'
+        self.save_supplement()
+        self.invoke(expected_error='supplement provenance mismatch: fonts@1.2.3')
+        self.supplement['repository'] = 'https://github.com/example/fonts'
+        self.save_supplement()
+        payload = self.supplements / self.supplement['files'][0]['path']
+        original = payload.read_bytes()
+        payload.write_bytes(b'tampered')
+        self.invoke(expected_error='supplement hash mismatch: fonts@1.2.3')
+        payload.write_bytes(original)
+        self.supplement['files'][0]['path'] = 'files/' + '0' * 64
+        self.supplement['files'][0]['sha256'] = '0' * 64
+        self.save_supplement()
+        self.invoke(expected_error='missing supplement file: fonts@1.2.3')
+
+    def test_supplement_traversal_symlink_and_missing_vcs_fail_closed(self):
+        self.supplement_fixture()
+        original = self.supplement['files'][0]['path']
+        self.supplement['files'][0]['path'] = '../Cargo.toml'
+        self.save_supplement()
+        self.invoke(expected_error='invalid supplement path: fonts@1.2.3')
+        self.supplement['files'][0]['path'] = original
+        self.save_supplement()
+        (self.supplements / 'manifest.json').write_text('{}')
+        self.invoke(expected_error='invalid supplement manifest')
+        self.save_supplement()
+        # Use a fresh hashed path for a symlink; do not remove fixture files.
+        sha = '0' * 64
+        (self.supplements / 'files' / sha).symlink_to(self.supplements / original)
+        self.supplement['files'][0].update(path='files/' + sha, sha256=sha)
+        self.save_supplement()
+        self.invoke(expected_error='symlink in supplement')
+        self.supplement['files'][0].update(path=original, sha256=original.split('/')[1])
+        self.save_supplement()
+        (self.crate / '.cargo_vcs_info.json').write_text('{}')
+        self.invoke(expected_error='supplement provenance mismatch: fonts@1.2.3')
+
+    def test_supplement_missing_entry_license_and_upstream_binding(self):
+        self.supplement_fixture()
+        (self.supplements / 'manifest.json').write_text(json.dumps({
+            'schema_version': 1, 'packages': []}))
+        self.invoke(expected_error='no notices found: fonts@1.2.3')
+        self.supplement['license_expression'] = 'MIT'
+        self.save_supplement()
+        self.invoke(expected_error='supplement provenance mismatch: fonts@1.2.3')
+        self.supplement['license_expression'] = self.metadata['packages'][1]['license']
+        self.supplement['files'][0]['upstream_url'] = 'https://github.com/example/fonts/blob/main/LICENSE'
+        self.save_supplement()
+        self.invoke(expected_error='invalid supplement upstream URL: fonts@1.2.3')
+        self.supplement['files'][0]['upstream_url'] = (
+            'https://github.com/example/fonts/blob/' + 'a' * 40 + '/LICENSE')
+        self.supplement['path_in_vcs'] = 'wrong/path'
+        self.save_supplement()
+        self.invoke(expected_error='supplement provenance mismatch: fonts@1.2.3')
+
+    def test_missing_walk_root_fails_closed(self):
+        self.metadata['packages'][1]['manifest_path'] = str(self.root / 'absent/Cargo.toml')
+        self.save_metadata()
+        self.invoke(expected_error='cannot inventory directory')
+        self.metadata['packages'][1]['manifest_path'] = str(self.crate / 'Cargo.toml')
+        self.save_metadata()
+        self.out = self.base / 'absent-audit'
+        self.invoke('--validate', 'invalid audit')
+
+    def test_registry_scope_is_exact_and_home_fallback_is_portable(self):
+        self.supplement_fixture()
+        self.env.pop('CARGO_HOME')
+        self.env['HOME'] = str(self.base / 'home')
+        self.invoke(expected_error='dependency source outside authorized roots')
+        # Resolve the same exact registry index through HOME/.cargo.
+        home_crate = self.base / 'home/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fonts-1.2.3'
+        home_crate.mkdir(parents=True)
+        (home_crate / '.cargo_vcs_info.json').write_bytes((self.crate / '.cargo_vcs_info.json').read_bytes())
+        (home_crate / 'Cargo.toml').write_text('fixture')
+        self.metadata['packages'][1]['manifest_path'] = str(home_crate / 'Cargo.toml')
+        self.save_metadata()
+        self.generate()
+        self.invoke('--validate')
+        self.metadata['packages'][1]['manifest_path'] = str(home_crate.parent.parent / 'other-index/fonts/Cargo.toml')
+        self.save_metadata()
+        self.out = self.base / 'other-index-audit'
+        self.invoke(expected_error='dependency source outside authorized roots')
+
+    def test_supplement_release_fallback_is_not_exact_source(self):
+        self.supplement_fixture(release=True)
+        package = self.generate()['packages'][0]
+        self.assertEqual(package['notice_provenance'], self.supplement)
+        self.invoke('--validate')
+        self.supplement.pop('release_tag')
+        self.save_supplement()
+        self.invoke('--validate', 'supplement provenance mismatch: fonts@1.2.3')
+
+    def test_dispatch_exception_propagates_and_is_source_bound(self):
+        self.supplement_fixture(exception=True)
+        manifest = self.generate()
+        package = manifest['packages'][0]
+        self.assertEqual(package['license_exception'], self.supplement['license_exception'])
+        self.assertEqual(package['license'], 'MIT')
+        self.assertFalse(package['selected_license_notice_verified'])
+        result = json.loads(self.invoke('--validate').stdout)
+        self.assertTrue(result['notice_inventory_complete'])
+        self.assertEqual(result['license_exceptions'], [{
+            'name': 'dispatch', 'version': '0.2.0',
+            'license_exception': self.supplement['license_exception']}])
+        self.assertFalse(result['legal_audit_complete'])
+        self.supplement['license_exception']['reason'] = 'changed disclosure'
+        self.save_supplement()
+        self.invoke('--validate', 'manifest does not match source closure')
+
+    def test_checked_in_supplement_inventory_through_public_cli(self):
+        import shutil
+        assets = SCRIPT.parents[1] / 'assets/macos-license-supplements'
+        supplements = json.loads((assets / 'manifest.json').read_bytes())['packages']
+        shutil.copytree(assets, self.root / 'assets/macos-license-supplements')
+        self.metadata['packages'] = self.metadata['packages'][:1]
+        self.metadata['resolve']['nodes'] = [{'id': 'app-id'}]
+        for entry in supplements:
+            key = entry['name'] + '@' + entry['version']
+            crate = self.root / 'vendor' / key
+            crate.mkdir()
+            (crate / 'Cargo.toml').write_text('fixture')
+            vcs = {'git': {'sha1': entry['crate_revision']}, 'path_in_vcs': entry['path_in_vcs']}
+            repository = entry['repository']
+            if key == 'dispatch@0.2.0':
+                # Exact published cache shape: legacy VCS metadata omits the
+                # repository-root path; Cargo declares the HTTP GitHub URL.
+                vcs = {'git': {'sha1': '82d6c7a5b75dc0c71c3f46f87bb6c16a476f7748'}}
+                repository = 'http://github.com/SSheldon/rust-dispatch'
+                (crate / 'Cargo.toml').write_bytes((assets / entry['files'][0]['path']).read_bytes())
+            (crate / '.cargo_vcs_info.json').write_text(json.dumps(vcs))
+            self.metadata['packages'].append({
+                'id': key, 'name': entry['name'], 'version': entry['version'],
+                'license': entry['license_expression'], 'repository': repository,
+                'manifest_path': str(crate / 'Cargo.toml')})
+            self.metadata['resolve']['nodes'].append({'id': key})
+        self.save_metadata()
+        self.package_count = 29
+        self.file_count = 41
+        manifest = self.generate()
+        self.assertNotIn(str(self.base), json.dumps(manifest))
+        self.assertEqual([p['notice_provenance'] for p in manifest['packages']],
+                         sorted(supplements, key=lambda p: p['name'] + '@' + p['version']))
+        self.assertEqual(sum(p['notice_provenance']['provenance_kind'] ==
+                             'same-version-upstream-release' for p in manifest['packages']), 6)
+        result = json.loads(self.invoke('--validate').stdout)
+        self.assertEqual(len(result['license_exceptions']), 1)
+        dispatch = next(p for p in supplements if p['name'] == 'dispatch')
+        self.assertEqual(result['license_exceptions'], [{
+            'name': 'dispatch', 'version': '0.2.0',
+            'license_exception': dispatch['license_exception']}])
+        copied_dispatch = next(p for p in manifest['packages'] if p['name'] == 'dispatch')
+        self.assertFalse(copied_dispatch['selected_license_notice_verified'])
+        self.assertFalse(result['legal_audit_complete'])
+        # Missing means root only: never normalize '.', null, or another path.
+        vcs_path = self.root / 'vendor/dispatch@0.2.0/.cargo_vcs_info.json'
+        for wrong_path in ('.', None, 'crates/dispatch'):
+            with self.subTest(wrong_path=wrong_path):
+                vcs_path.write_text(json.dumps({'git': {'sha1': dispatch['crate_revision']},
+                                                'path_in_vcs': wrong_path}))
+                self.invoke('--validate', 'supplement provenance mismatch: dispatch@0.2.0')
 
     def test_help_describes_contract(self):
         result = subprocess.run([sys.executable, str(SCRIPT), "--help"], text=True, capture_output=True, timeout=10)

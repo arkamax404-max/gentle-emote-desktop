@@ -15,9 +15,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from urllib.parse import urlsplit
 
 TARGETS = ["x86_64-apple-darwin", "aarch64-apple-darwin"]
-REGISTRY_ROOT = Path("/Users/santiagoperez/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f")
+REGISTRY_INDEX = "index.crates.io-1949cf8c6b5b557f"
+SUPPLEMENTS = "assets/macos-license-supplements"
 SUPPORTED = {
     "MIT", "Apache-2.0", "Unicode-3.0", "Unicode-DFS-2016", "OFL-1.1",
     "Ubuntu-font-1.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib",
@@ -130,7 +132,8 @@ def beneath(path, root):
 def safe_source(path, root):
     # Check lexical and resolved containment before reading any dependency file.
     path = Path(os.path.abspath(path))
-    allowed = [root, REGISTRY_ROOT]
+    cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")).absolute()
+    allowed = [root, cargo_home / "registry/src" / REGISTRY_INDEX]
     if not any(beneath(path, r) for r in allowed):
         raise RuntimeError("dependency source outside authorized roots")
     if any(p.is_symlink() for p in [path, *path.parents]):
@@ -140,9 +143,14 @@ def safe_source(path, root):
     return path
 
 
+def walk_error(error):
+    # os.walk silently ignores inaccessible directories unless onerror is set.
+    raise RuntimeError("cannot inventory directory") from error
+
+
 def notice_files(crate, root):
     files = {}
-    for directory, dirs, names in os.walk(crate, followlinks=False):
+    for directory, dirs, names in os.walk(crate, followlinks=False, onerror=walk_error):
         for name in sorted(dirs + names):
             path = safe_source(Path(directory) / name, root)
             if not path.is_file():
@@ -163,6 +171,141 @@ def notice_files(crate, root):
                     raise RuntimeError("empty notice file")
                 files[relative.as_posix()] = data
     return files
+
+
+def normalized_repository(value):
+    if not isinstance(value, str):
+        raise ValueError("missing repository")
+    parsed = urlsplit(value.removeprefix("git+"))
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("invalid repository")
+    if parsed.query or parsed.fragment or parsed.port:
+        raise ValueError("invalid repository")
+    path = parsed.path.rstrip("/").removesuffix(".git")
+    if not path or any(p in (".", "..") for p in path.split("/")):
+        raise ValueError("invalid repository")
+    if parsed.hostname.lower() == "github.com":
+        parts = path.strip("/").split("/")
+        if len(parts) < 2 or not all(parts):
+            raise ValueError("invalid repository")
+        if len(parts) > 2 and (len(parts) < 5 or parts[2] not in ("tree", "blob")):
+            raise ValueError("invalid repository")
+        # Cargo repository declarations sometimes link to a crate subdirectory.
+        # Those links still identify the same owner/repository, not a new repo.
+        path = "/" + "/".join(parts[:2])
+    return "https://" + parsed.hostname.lower() + path
+
+
+def supplement_path(base, relative):
+    # Never follow links, even when their destination is contained.
+    if not isinstance(relative, str) or relative.startswith("/") or "\\" in relative:
+        raise RuntimeError("invalid supplement manifest")
+    parts = relative.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        raise RuntimeError("invalid supplement manifest")
+    path = base / relative
+    if any(p.is_symlink() for p in [path, *path.parents]):
+        raise RuntimeError("symlink in supplement")
+    return path
+
+
+def supplemental_notices(package, crate, root, key):
+    base = root / SUPPLEMENTS
+    manifest_path = supplement_path(base, "manifest.json")
+    if not manifest_path.exists():
+        raise RuntimeError("no notices found: " + key)
+    try:
+        manifest = json.loads(manifest_path.read_bytes())
+        if manifest["schema_version"] != 1 or not isinstance(manifest["packages"], list):
+            raise ValueError()
+        entries = {}
+        for entry in manifest["packages"]:
+            identity = (entry["name"], entry["version"])
+            if identity in entries:
+                raise ValueError()
+            entries[identity] = entry
+    except (OSError, ValueError, KeyError, TypeError):
+        raise RuntimeError("invalid supplement manifest") from None
+    entry = entries.get((package["name"], package["version"]))
+    if entry is None:
+        raise RuntimeError("no notices found: " + key)
+    try:
+        vcs = json.loads(safe_source(crate / ".cargo_vcs_info.json", root).read_bytes())
+        revision = entry["crate_revision"]
+        notice_revision = entry["notice_revision"]
+        kind = entry["provenance_kind"]
+        repository = normalized_repository(package["repository"])
+        if (entry["repository"] != repository or
+                not re.fullmatch(r"[0-9a-f]{40}", revision) or
+                not re.fullmatch(r"[0-9a-f]{40}", notice_revision) or
+                vcs["git"]["sha1"] != revision or
+                # Legacy Cargo VCS metadata omits the repository-root path.
+                # Only absence defaults to root; explicit values stay exact.
+                vcs.get("path_in_vcs", "") != entry["path_in_vcs"] or
+                entry["license_expression"] != package["license"]):
+            raise ValueError()
+        if kind in ("exact-crate-revision", "declared-license-exception"):
+            if notice_revision != revision:
+                raise ValueError()
+        elif kind == "same-version-upstream-release":
+            if (not isinstance(entry["release_tag"], str) or
+                    entry["release_tag"] not in (package["version"], "v" + package["version"])):
+                raise ValueError()
+        else:
+            raise ValueError()
+        if "license_exception" in entry:
+            if (key != "dispatch@0.2.0" or package["license"] != "MIT" or
+                    kind != "declared-license-exception" or not entry["license_exception"]):
+                raise ValueError()
+        elif kind == "declared-license-exception":
+            raise ValueError()
+        if not isinstance(entry["files"], list) or not entry["files"]:
+            raise ValueError()
+    except (OSError, ValueError, KeyError, TypeError):
+        raise RuntimeError("supplement provenance mismatch: " + key) from None
+    notices = {}
+    roles = []
+    for record in entry["files"]:
+        try:
+            sha = record["sha256"]
+            relative = record["path"]
+            if not re.fullmatch(r"[0-9a-f]{64}", sha) or relative != "files/" + sha:
+                raise ValueError()
+        except (ValueError, KeyError, TypeError):
+            raise RuntimeError("invalid supplement path: " + key) from None
+        source = supplement_path(base, relative)
+        try:
+            data = source.read_bytes()
+        except OSError:
+            raise RuntimeError("missing supplement file: " + key) from None
+        if digest(data) != sha or not data.strip():
+            raise RuntimeError("supplement hash mismatch: " + key)
+        # Exact pinned source links, never a branch or a claim that a release
+        # fallback is the unavailable published crate commit.
+        try:
+            url = urlsplit(record["upstream_url"])
+            if url.scheme != "https" or url.query or url.fragment or url.username or url.password:
+                raise ValueError()
+            if record.get("role") == "spdx-reference" and kind == "declared-license-exception":
+                raw = (url.hostname == "raw.githubusercontent.com" and re.fullmatch(
+                    r"/spdx/license-list-data/[0-9a-f]{40}/text/MIT.txt", url.path))
+                blob = (url.hostname == "github.com" and re.fullmatch(
+                    r"/spdx/license-list-data/blob/[0-9a-f]{40}/text/MIT.txt", url.path))
+                if not (raw or blob) or url.port:
+                    raise ValueError()
+            else:
+                prefix = repository + "/blob/" + notice_revision + "/"
+                if not record["upstream_url"].startswith(prefix) or not url.path.split("/")[-1]:
+                    raise ValueError()
+            roles.append(record.get("role"))
+        except (ValueError, KeyError, TypeError):
+            raise RuntimeError("invalid supplement upstream URL: " + key) from None
+        if relative in notices:
+            raise RuntimeError("duplicate supplement file: " + key)
+        notices[relative] = data
+    if kind == "declared-license-exception" and sorted(roles) != ["license-declaration", "spdx-reference"]:
+        raise RuntimeError("invalid exception evidence: " + key)
+    return notices, entry
 
 
 def inventory(source_root):
@@ -199,8 +342,9 @@ def inventory(source_root):
                 raise RuntimeError("unsupported or missing SPDX license: " + key) from None
             crate = safe_source(Path(p["manifest_path"]).parent, root)
             notices = notice_files(crate, root)
+            provenance = None
             if not notices:
-                raise RuntimeError("no notices found: " + key)
+                notices, provenance = supplemental_notices(p, crate, root, key)
             records = []
             for relative, data in sorted(notices.items()):
                 destination = "packages/" + key + "/" + relative
@@ -208,6 +352,11 @@ def inventory(source_root):
                 payload[destination] = data
             record = {"name": p["name"], "version": p["version"], "license": p["license"],
                       "selected_licenses": selected, "targets": [], "files": records}
+            if provenance is not None:
+                record["notice_provenance"] = provenance
+                if "license_exception" in provenance:
+                    record["license_exception"] = provenance["license_exception"]
+                    record["selected_license_notice_verified"] = False
             if key in packages:
                 previous_id, previous = packages[key]
                 if previous_id != package_id or dict(previous, targets=[]) != record or target in previous["targets"]:
@@ -225,7 +374,7 @@ def audit_files(audit_dir):
         raise RuntimeError("symlink in audit")
     audit_dir = audit_dir.resolve(strict=True)
     files = {}
-    for directory, dirs, names in os.walk(audit_dir, followlinks=False):
+    for directory, dirs, names in os.walk(audit_dir, followlinks=False, onerror=walk_error):
         for name in dirs + names:
             path = Path(directory) / name
             if path.is_symlink():
@@ -239,7 +388,12 @@ def audit_files(audit_dir):
 
 def summary(manifest_bytes, manifest, payload):
     return {"manifest_sha256": digest(manifest_bytes),
-            "package_count": len(manifest["packages"]), "file_count": len(payload)}
+            "package_count": len(manifest["packages"]), "file_count": len(payload),
+            "notice_inventory_complete": True,
+            "legal_audit_complete": False,
+            "license_exceptions": [
+                {"name": p["name"], "version": p["version"], "license_exception": p["license_exception"]}
+                for p in manifest["packages"] if "license_exception" in p]}
 
 
 def validate_audit(audit_dir: Path, source_root: Path) -> dict:
@@ -284,7 +438,10 @@ def generate(output, root):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__ + " Cargo metadata is offline and locked.")
+    parser = argparse.ArgumentParser(description=__doc__ +
+        " Cargo metadata is offline and locked. Missing shipped notices require checked-in "
+        "assets/macos-license-supplements with pinned provenance and SHA256 payloads. "
+        "Explicit license exceptions are disclosed, not proof of a selected license grant.")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--output", type=Path, help="create a NEW notice directory (parent must exist)")
     mode.add_argument("--validate", type=Path, help="validate an existing directory against exact source closures")
