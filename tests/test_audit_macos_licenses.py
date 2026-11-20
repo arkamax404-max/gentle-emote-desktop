@@ -158,6 +158,95 @@ class AuditTests(unittest.TestCase):
         (self.supplements / 'manifest.json').write_text(json.dumps({
             'schema_version': 1, 'packages': [self.supplement]}))
 
+    def historical_fixture(self):
+        self.supplement_fixture()
+        assets = SCRIPT.parents[1] / 'assets/macos-license-supplements'
+        entries = json.loads((assets / 'manifest.json').read_bytes())['packages']
+        self.supplement = next(e for e in entries if e['name'] == 'dispatch2')
+        for record in self.supplement['files']:
+            (self.supplements / record['path']).write_bytes((assets / record['path']).read_bytes())
+        p = self.metadata['packages'][1]
+        p.update(name='dispatch2', version='0.3.1', license=self.supplement['license_expression'],
+                 repository=self.supplement['repository'])
+        (self.crate / '.cargo_vcs_info.json').write_text(json.dumps({
+            'git': {'sha1': self.supplement['crate_revision']},
+            'path_in_vcs': self.supplement['path_in_vcs']}))
+        self.file_count = 2
+        self.save_metadata()
+        self.save_supplement()
+
+    def test_historical_mit_requires_evidence_and_preserves_current_declaration(self):
+        self.historical_fixture()
+        package = self.generate()['packages'][0]
+        self.assertEqual(package['license'], 'Zlib OR Apache-2.0 OR MIT')
+        self.assertEqual(package['selected_licenses'], ['MIT'])
+        self.assertFalse(package['selected_license_notice_verified'])
+        self.assertFalse(package['notice_provenance']['historical_notice_applicability_verified'])
+        for record in self.supplement['files']:
+            copied = self.out / ('packages/dispatch2@0.3.1/' + record['path'])
+            self.assertEqual(copied.read_bytes(), (self.supplements / record['path']).read_bytes())
+        historical = self.supplement['files'][1]
+        self.assertIn(b'Copyright (c) Steven Sheldon\n',
+                      (self.supplements / historical['path']).read_bytes())
+        self.invoke('--validate')
+        # A shipped link-only declaration must not bypass the exception.
+        declaration = self.supplement['files'][0]
+        (self.crate / 'LICENSE.md').write_bytes((self.supplements / declaration['path']).read_bytes())
+        self.file_count = 3
+        self.out = self.base / 'shipped-historical'
+        self.assertEqual(self.generate()['packages'][0]['selected_licenses'], ['MIT'])
+        self.invoke('--validate')
+
+    def test_historical_exception_rejects_missing_or_malformed_evidence(self):
+        self.historical_fixture()
+        import copy
+        original = copy.deepcopy(self.supplement)
+        mutations = [
+            lambda e: e['files'].pop(),
+            lambda e: e.update(selected_licenses=['Zlib']),
+            lambda e: e.update(license_exception=''),
+            lambda e: e.update(historical_notice_applicability_verified=True),
+            lambda e: e.update(provenance_kind='exact-crate-revision'),
+            lambda e: e['files'][1].update(notice_revision=e['crate_revision']),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutations.index(mutate)):
+                self.supplement = copy.deepcopy(original)
+                mutate(self.supplement)
+                self.save_supplement()
+                self.invoke(expected_error='supplement provenance mismatch: dispatch2@0.3.1')
+        self.supplement = copy.deepcopy(original)
+        self.supplement['files'][1]['upstream_url'] = self.supplement['files'][0]['upstream_url']
+        self.save_supplement()
+        self.invoke(expected_error='invalid supplement upstream URL: dispatch2@0.3.1')
+        self.supplement = copy.deepcopy(original)
+        self.supplement['files'][1].update(path=original['files'][0]['path'],
+                                         sha256=original['files'][0]['sha256'])
+        self.save_supplement()
+        self.invoke(expected_error='supplement provenance mismatch: dispatch2@0.3.1')
+        self.supplement = copy.deepcopy(original)
+        self.save_supplement()
+        historical_path = self.supplements / original['files'][1]['path']
+        historical_path.rename(self.supplements / 'held-notice')
+        self.invoke(expected_error='missing supplement file: dispatch2@0.3.1')
+        (self.supplements / 'held-notice').rename(historical_path)
+        self.supplement['files'][1].update(path='files/' + '0' * 64, sha256='0' * 64)
+        self.save_supplement()
+        self.invoke(expected_error='supplement provenance mismatch: dispatch2@0.3.1')
+        self.supplement['files'][1] = copy.deepcopy(original['files'][1])
+        self.save_supplement()
+        (self.supplements / original['files'][1]['path']).write_bytes(b'tampered')
+        self.invoke(expected_error='supplement hash mismatch: dispatch2@0.3.1')
+
+    def test_historical_choice_cannot_cover_and_or_absent_mit(self):
+        self.historical_fixture()
+        for expression in ('Zlib', 'MIT AND Zlib', 'Apache-2.0 OR Zlib'):
+            self.metadata['packages'][1]['license'] = expression
+            self.supplement['license_expression'] = expression
+            self.save_metadata()
+            self.save_supplement()
+            self.invoke(expected_error='supplement provenance mismatch: dispatch2@0.3.1')
+
     def test_repository_subdirectory_url_normalizes_to_same_repository(self):
         self.supplement_fixture()
         self.metadata['packages'][1]['repository'] = 'https://github.com/example/fonts/tree/main/crates/fonts'
@@ -320,7 +409,7 @@ class AuditTests(unittest.TestCase):
             self.metadata['resolve']['nodes'].append({'id': key})
         self.save_metadata()
         self.package_count = 29
-        self.file_count = 41
+        self.file_count = 51
         manifest = self.generate()
         self.assertNotIn(str(self.base), json.dumps(manifest))
         self.assertEqual([p['notice_provenance'] for p in manifest['packages']],
@@ -328,11 +417,18 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(sum(p['notice_provenance']['provenance_kind'] ==
                              'same-version-upstream-release' for p in manifest['packages']), 6)
         result = json.loads(self.invoke('--validate').stdout)
-        self.assertEqual(len(result['license_exceptions']), 1)
+        self.assertEqual(len(result['license_exceptions']), 11)
         dispatch = next(p for p in supplements if p['name'] == 'dispatch')
-        self.assertEqual(result['license_exceptions'], [{
+        self.assertIn({
             'name': 'dispatch', 'version': '0.2.0',
-            'license_exception': dispatch['license_exception']}])
+            'license_exception': dispatch['license_exception']}, result['license_exceptions'])
+        historical = [p for p in manifest['packages']
+                      if p['notice_provenance']['provenance_kind'] == 'historical-mit-exception']
+        self.assertEqual(len(historical), 10)
+        for package in historical:
+            self.assertEqual(package['selected_licenses'], ['MIT'])
+            self.assertFalse(package['selected_license_notice_verified'])
+            self.assertFalse(package['notice_provenance']['historical_notice_applicability_verified'])
         copied_dispatch = next(p for p in manifest['packages'] if p['name'] == 'dispatch')
         self.assertFalse(copied_dispatch['selected_license_notice_verified'])
         self.assertFalse(result['legal_audit_complete'])
@@ -361,6 +457,12 @@ class AuditTests(unittest.TestCase):
                 self.metadata["packages"][1]["license"] = license
                 self.save_metadata()
                 self.invoke(expected_error="unsupported or missing SPDX license: fonts@1.2.3")
+
+    def test_ordinary_or_selection_remains_first_supported(self):
+        self.metadata['packages'][1]['license'] = 'Zlib OR Apache-2.0 OR MIT'
+        self.save_metadata()
+        self.assertEqual(self.generate()['packages'][0]['selected_licenses'], ['Zlib'])
+        self.invoke('--validate')
 
     def test_supported_license_expressions(self):
         for license in ("MIT AND (Apache-2.0 OR GPL-3.0-only)", "Unicode-3.0", "OFL-1.1",

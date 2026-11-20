@@ -20,6 +20,16 @@ from urllib.parse import urlsplit
 TARGETS = ["x86_64-apple-darwin", "aarch64-apple-darwin"]
 REGISTRY_INDEX = "index.crates.io-1949cf8c6b5b557f"
 SUPPLEMENTS = "assets/macos-license-supplements"
+HISTORICAL_PACKAGES = {
+    'block2@0.6.2', 'objc2@0.6.5', 'objc2-encode@4.1.0', 'dispatch2@0.3.1',
+    *('objc2-' + name + '@0.3.2' for name in (
+        'app-kit', 'core-foundation', 'core-graphics', 'io-surface', 'metal', 'quartz-core')),
+}
+HISTORICAL_REVISION = '757cd841d0293341dbefd9b99d7548dec244ffde'
+HISTORICAL_SHA = 'e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5'
+DECLARATION_SHA = '7f976f7e9cb2d87df7230606feb932c3f21ac0e664045a775b600046ff850c54'
+HISTORICAL_URL = ('https://raw.githubusercontent.com/madsmtm/objc2/' +
+                  HISTORICAL_REVISION + '/LICENSE.txt')
 SUPPORTED = {
     "MIT", "Apache-2.0", "Unicode-3.0", "Unicode-DFS-2016", "OFL-1.1",
     "Ubuntu-font-1.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib",
@@ -244,7 +254,33 @@ def supplemental_notices(package, crate, root, key):
                 vcs.get("path_in_vcs", "") != entry["path_in_vcs"] or
                 entry["license_expression"] != package["license"]):
             raise ValueError()
-        if kind in ("exact-crate-revision", "declared-license-exception"):
+        historical = kind == 'historical-mit-exception'
+        if key in HISTORICAL_PACKAGES and not historical:
+            raise ValueError()
+        if historical:
+            # Only the accepted ten identities and their MIT-only OR alternative.
+            # This does not change the ordinary first-supported SPDX chooser.
+            if (key not in HISTORICAL_PACKAGES or
+                    repository != 'https://github.com/madsmtm/objc2' or
+                    package['license'] not in ('MIT', 'Zlib OR Apache-2.0 OR MIT') or
+                    entry['selected_licenses'] != ['MIT'] or
+                    entry['historical_notice_applicability_verified'] is not False or
+                    not isinstance(entry['license_exception'], str) or
+                    not entry['license_exception'].strip() or notice_revision != revision):
+                raise ValueError()
+            records = entry['files']
+            if (len(records) != 2 or
+                    records[0]['role'] != 'license-declaration' or
+                    records[0]['sha256'] != DECLARATION_SHA or
+                    records[1]['role'] != 'historical-mit-notice' or
+                    records[1]['sha256'] != HISTORICAL_SHA or
+                    records[1]['notice_revision'] != HISTORICAL_REVISION):
+                raise ValueError()
+        elif ('selected_licenses' in entry or 'historical_notice_applicability_verified' in entry or
+              any('notice_revision' in r or r.get('role') == 'historical-mit-notice'
+                  for r in entry['files'])):
+            raise ValueError()
+        if kind in ("exact-crate-revision", "declared-license-exception", 'historical-mit-exception'):
             if notice_revision != revision:
                 raise ValueError()
         elif kind == "same-version-upstream-release":
@@ -253,7 +289,7 @@ def supplemental_notices(package, crate, root, key):
                 raise ValueError()
         else:
             raise ValueError()
-        if "license_exception" in entry:
+        if "license_exception" in entry and not historical:
             if (key != "dispatch@0.2.0" or package["license"] != "MIT" or
                     kind != "declared-license-exception" or not entry["license_exception"]):
                 raise ValueError()
@@ -286,7 +322,12 @@ def supplemental_notices(package, crate, root, key):
             url = urlsplit(record["upstream_url"])
             if url.scheme != "https" or url.query or url.fragment or url.username or url.password:
                 raise ValueError()
-            if record.get("role") == "spdx-reference" and kind == "declared-license-exception":
+            if historical:
+                expected_url = (HISTORICAL_URL if record['role'] == 'historical-mit-notice'
+                                else repository + '/blob/' + revision + '/LICENSE.md')
+                if record['upstream_url'] != expected_url:
+                    raise ValueError()
+            elif record.get("role") == "spdx-reference" and kind == "declared-license-exception":
                 raw = (url.hostname == "raw.githubusercontent.com" and re.fullmatch(
                     r"/spdx/license-list-data/[0-9a-f]{40}/text/MIT.txt", url.path))
                 blob = (url.hostname == "github.com" and re.fullmatch(
@@ -343,8 +384,11 @@ def inventory(source_root):
             crate = safe_source(Path(p["manifest_path"]).parent, root)
             notices = notice_files(crate, root)
             provenance = None
-            if not notices:
-                notices, provenance = supplemental_notices(p, crate, root, key)
+            if not notices or key in HISTORICAL_PACKAGES:
+                supplements, provenance = supplemental_notices(p, crate, root, key)
+                notices.update(supplements)
+                if provenance['provenance_kind'] == 'historical-mit-exception':
+                    selected = provenance['selected_licenses']
             records = []
             for relative, data in sorted(notices.items()):
                 destination = "packages/" + key + "/" + relative
@@ -441,7 +485,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__ +
         " Cargo metadata is offline and locked. Missing shipped notices require checked-in "
         "assets/macos-license-supplements with pinned provenance and SHA256 payloads. "
-        "Explicit license exceptions are disclosed, not proof of a selected license grant.")
+        "Explicit license exceptions are disclosed, not proof of a selected license grant. "
+        "Historical MIT exceptions retain current declarations and unverified applicability.")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--output", type=Path, help="create a NEW notice directory (parent must exist)")
     mode.add_argument("--validate", type=Path, help="validate an existing directory against exact source closures")

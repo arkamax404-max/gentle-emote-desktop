@@ -242,6 +242,12 @@ class PackagingToolchainTests(unittest.TestCase):
         exceptions = ([{"name": "dispatch", "version": "0.2.0",
                         "license_exception": "MIT declared in exact upstream Cargo.toml; no original notice; standard MIT reference only"}]
                       if scenario in ("license-exception", "exception-mismatch") else [])
+        if scenario == 'historical-exceptions':
+            manifest = SCRIPT.parents[1] / 'assets/macos-license-supplements/manifest.json'
+            exceptions = [{'name': e['name'], 'version': e['version'],
+                           'license_exception': e['license_exception']}
+                          for e in json.loads(manifest.read_bytes())['packages']
+                          if 'license_exception' in e]
         (audit / "manifest.json").write_text(json.dumps({"license_exceptions": exceptions}))
         if scenario == "exception-mismatch":
             (root / "change-exception").touch()
@@ -328,6 +334,27 @@ class PackagingToolchainTests(unittest.TestCase):
         self.assertIn("standard MIT reference is not dispatch's original notice", disclosure)
         self.assertIn("No complete legal-license audit is claimed.", disclosure)
         self.assertEqual(len([c for c in calls if "--sign" in c]), 1)
+
+    def test_all_eleven_exceptions_survive_bundle_and_external_receipt(self):
+        root, result, calls = self.fixture('historical-exceptions')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, '')
+        output = next(root.glob('target/macos-package/*-v0.1.5-rc.1-universal2-*'))
+        resources = output / 'Gentle Emote Desktop.app/Contents/Resources'
+        expected = json.loads((root / 'audit/manifest.json').read_text())['license_exceptions']
+        self.assertEqual(len(expected), 11)
+        for path in (resources / 'packaging-receipt.json', output / 'signature-verification.json'):
+            evidence = json.loads(path.read_bytes())
+            self.assertEqual(evidence['license_exceptions'], expected)
+            self.assertEqual(evidence['license_audit']['license_exceptions'], expected)
+            self.assertFalse(evidence['legal_audit_complete'])
+            self.assertFalse(evidence['third_party_license_audit_complete'])
+        disclosure = (resources / 'README.txt').read_text()
+        for exception in expected:
+            self.assertIn(exception['name'] + ' ' + exception['version'], disclosure)
+            self.assertIn(exception['license_exception'], disclosure)
+        self.assertIn('applicability', disclosure)
+        self.assertEqual(len([c for c in calls if '--sign' in c]), 1)
 
     def test_signature_evidence_is_portable_in_all_receipt_fields(self):
         for scenario, merged_class in (("clean", "unsigned"), ("invalid-signature", "invalid")):

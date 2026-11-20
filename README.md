@@ -342,6 +342,21 @@ receipt disclose the exception before final signing; the external verification
 receipt records the same exception after signing. Both
 `legal_audit_complete` and `third_party_license_audit_complete` remain **false**;
 validated notice coverage is not a legal guarantee.
+**Public RC historical MIT exceptions — ten current crates:** block2 0.6.2,
+objc2 0.6.5, objc2-encode 4.1.0, dispatch2 0.3.1, and
+objc2-{app-kit,core-foundation,core-graphics,io-surface,metal,quartz-core} 0.3.2
+retain their exact upstream link-only declarations alongside the authentic
+[historical MIT notice](https://raw.githubusercontent.com/madsmtm/objc2/757cd841d0293341dbefd9b99d7548dec244ffde/LICENSE.txt).
+Original bytes and `Copyright (c) Steven Sheldon` attribution are unchanged.
+The human accepted prerelease publication **with uncertain applicability to these
+current crates**, not complete legal clearance. MIT is explicitly selected as a
+declared alternative only within these validated exceptions; it is not asserted
+to cover Zlib. Historical provenance remains separate from exact-current
+provenance, and applicability verification remains **false**. The bundled README,
+notice manifest and embedded/external receipts disclose all eleven exceptions
+(including the separate dispatch exception); legal/full-audit flags remain false.
+See the [supplement contract](assets/macos-license-supplements/README.md).
+
 Outputs use
 `target/macos-package/gentle-emote-desktop-v0.1.5-rc.1-universal2-<revision>/`,
 not the local naming scheme, and never overwrite earlier outputs.

@@ -293,7 +293,11 @@ def package(args):
              "standard MIT reference is not dispatch's original notice;\n"
              "no copyright holder or year is invented. See ThirdPartyNotices/manifest.json\n"
              "for exact provenance and the complete exception records.\n"
-             if receipt["license_exceptions"] else "") +
+             if any(e['name'] == 'dispatch' and e['version'] == '0.2.0'
+                    for e in receipt["license_exceptions"]) else "") +
+            "".join("License exception: {} {}: {}\n".format(
+                e['name'], e['version'], e['license_exception'])
+                for e in receipt['license_exceptions']) +
             "No minimum macOS compatibility guarantee or ARM runtime validation claim.\n"
             "The app listens on 127.0.0.1:8001; close other instances before opening.\n",
             encoding="utf-8",

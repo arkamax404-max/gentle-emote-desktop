@@ -3,8 +3,9 @@
 These portable assets fill notice omissions in the resolved Darwin dependency
 closures. They are **not a complete legal-license audit**, nor proof that every
 selected SPDX license grant is established. The helper performs no downloads.
-Shipped crate notices take precedence; supplements are used only when the crate
-contains no discoverable notices at all.
+Shipped crate notices normally take precedence. The ten historical MIT exceptions
+below also require supplements when a crate ships a link-only declaration;
+all discoverable shipped notices are retained.
 
 ## Manifest contract
 
@@ -20,7 +21,8 @@ has these fields:
   still require exact equality (including rejection of `"."` or `null`).
 - `notice_revision`: pinned 40-character upstream Git commit serving the notice.
 - `provenance_kind`: `exact-crate-revision`, `same-version-upstream-release`, or
-  the explicitly accepted `declared-license-exception` described below.
+  the explicitly accepted `declared-license-exception` or `historical-mit-exception`
+  described below.
 - `files`: records containing `path: files/<sha256>`, `sha256`, and
   `upstream_url` (a pinned HTTPS GitHub blob URL).
 
@@ -70,11 +72,38 @@ reports `legal_audit_complete: false`. Release disclosures must retain the
 exception; a complete notice inventory must not be presented as a full legal
 audit.
 
+## Historical MIT exceptions: uncertain current applicability
+
+The human accepted publication with authentic historical MIT text and current
+upstream declarations, **without establishing applicability to the current crates**.
+This covers block2 0.6.2, objc2 0.6.5, objc2-encode 4.1.0, dispatch2 0.3.1,
+and objc2-{app-kit,core-foundation,core-graphics,io-surface,metal,quartz-core} 0.3.2.
+It is distinct from dispatch's missing-original-notice exception above.
+
+Each `historical-mit-exception` entry preserves the current `crate_revision`,
+`notice_revision`, SPDX declaration and exact upstream `LICENSE.md` as a
+`license-declaration` file. That declaration contains links, not original MIT
+terms. A separate `historical-mit-notice` file has its own `notice_revision` and
+[pinned original URL](https://raw.githubusercontent.com/madsmtm/objc2/757cd841d0293341dbefd9b99d7548dec244ffde/LICENSE.txt).
+The fetched SHA256 is `e353f37b12aefbb9f9b29490e837cfee05d9bda70804b3562839a3285c1df1e5`,
+verified byte-for-byte against the existing payload before reuse. Its original
+`Copyright (c) Steven Sheldon` is unchanged, with no invented year.
+
+The narrow exception requires `selected_licenses: ["MIT"]`: MIT is an allowed
+alternative in these exact declarations. This does not assert that MIT covers
+Zlib, change ordinary OR selection, or prove a current grant. The auditor pins
+both evidence hashes, roles and source URLs, requires nonempty `license_exception`,
+and requires `historical_notice_applicability_verified: false`. Historical
+provenance cannot masquerade as exact-current evidence. Both the package's
+`selected_license_notice_verified` and summary's `legal_audit_complete` stay false.
+The bundle README and embedded/external receipts retain every exception.
+
 ## Checked-in retrieval provenance
 
-The inventory contains 29 package entries and 41 package-file references backed
-by 13 deduplicated payloads. Twenty-two entries use their exact published crate
-VCS revision, six use the explicit same-version release fallback below, and one
+The inventory contains 29 package entries and 51 package-file references backed
+by 13 deduplicated payloads. Twelve entries use their exact published crate
+VCS revision, six use the explicit same-version release fallback below, ten
+are historical MIT exceptions retaining exact-current declarations, and one
 is the dispatch exception. Each file's `upstream_url` preserves its exact source
 ref; shared bytes do not collapse distinct per-package provenance.
 
