@@ -9,6 +9,7 @@ from pathlib import Path
 import platform
 import plistlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -94,9 +95,8 @@ def release_build_environment(enabled, build):
                          if p.startswith("/private/var/")]
             for absolute in dict.fromkeys(variants):
                 remaps.append("--remap-path-prefix=" + absolute + "=" + replacement)
-        wrapper = Path(scratch) / "rustc-remap"
-        wrapper.write_text(
-            "#!" + sys.executable + "\n"
+        driver = Path(scratch) / "rustc-remap.py"
+        driver.write_text(
             "import os, sys\n"
             "command = sys.argv[1:]\n"
             "if '--crate-name' in command:\n"
@@ -106,6 +106,13 @@ def release_build_environment(enabled, build):
             "    command.insert(0, inherited)\n"
             "os.execvpe(command[0], command, os.environ)\n",
             encoding="utf-8",
+        )
+        # A shebang cannot quote an interpreter path containing whitespace.
+        # The shell parses only these quoted paths, never compiler arguments.
+        wrapper = Path(scratch) / "rustc-remap"
+        wrapper.write_text(
+            "#!/bin/sh\nexec " + shlex.quote(sys.executable) + " "
+            + shlex.quote(str(driver)) + ' "$@"\n', encoding="utf-8",
         )
         wrapper.chmod(0o755)
         env = os.environ.copy()

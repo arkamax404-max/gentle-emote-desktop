@@ -156,6 +156,14 @@ def fake_run(command, **kwargs):
                                  env=env, text=True, capture_output=True, check=True)
                 with (root / "remaps.jsonl").open("a") as log:
                     log.write(probe.stdout)
+            if scenario == "interpreter-spaces":
+                assert " " in sys.executable, sys.executable
+                probe = real_run([env["RUSTC_WRAPPER"], sys.executable, "-c",
+                                  "import json,sys; print(json.dumps(sys.argv[1:]))",
+                                  "--crate-name", "fixture", "argument with spaces"],
+                                 env=env, text=True, capture_output=True, check=True)
+                with (root / "remaps.jsonl").open("a") as log:
+                    log.write(probe.stdout)
             target = args[args.index("--target") + 1]
             dest = pathlib.Path(args[-1]) / target / "release/gentle-emote-desktop"
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -291,11 +299,30 @@ class PackagingToolchainTests(unittest.TestCase):
             env.pop("RUSTC_WRAPPER", None)
             self.wrapper_files_before = {str(p.relative_to(root)): p.read_bytes()
                                          for p in root.rglob("*") if p.is_file()}
-        result = subprocess.run([sys.executable, "-B", str(launcher), scenario, *args],
+        python = sys.executable
+        if scenario == "interpreter-spaces":
+            interpreter = root / "python interpreter's directory/python3"
+            interpreter.parent.mkdir()
+            interpreter.symlink_to(sys.executable)
+            python = str(interpreter)
+        result = subprocess.run([python, "-B", str(launcher), scenario, *args],
                                 cwd=root, capture_output=True, text=True, timeout=10, env=env)
         log = root / "calls.jsonl"
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         return root, result, calls
+
+    def test_release_wrapper_runs_with_python_interpreter_path_containing_spaces(self):
+        root, result, calls = self.fixture("interpreter-spaces")
+        self.assert_success_output(root, result)
+        builds = [c for c in calls if c[1] == "build"]
+        self.assertEqual([c[c.index("--target") + 1] for c in builds],
+                         ["x86_64-apple-darwin", "aarch64-apple-darwin"])
+        probes = [json.loads(s) for s in (root / "remaps.jsonl").read_text().splitlines()]
+        self.assertEqual(len(probes), 2)
+        for arguments in probes:
+            self.assertEqual(arguments[:3], ["--crate-name", "fixture", "argument with spaces"])
+            self.assertIn("--remap-path-prefix=" + str(root.resolve()) + "=/source", arguments)
+            self.assertIn("--remap-path-prefix=" + str((root / "target/macos-package/build").resolve()) + "=/build", arguments)
 
     def test_unset_release_wrapper_fails_without_writes_or_tool_calls(self):
         root, result, calls = self.fixture("unset-wrapper")
