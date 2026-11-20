@@ -194,6 +194,166 @@ atomic; simultaneous desktop instances use last-writer-wins. No other settings o
 sender/LED files are read or saved. Library/embedding `EmoteApp::new(receiver)`
 remains filesystem-free; only the native entry point opts in by supplying the path.
 
+## macOS app and ZIP
+
+Local packaging is the default. Prerelease packaging adds clean-source and
+validated dependency-notice gates; neither mode publishes or launches anything.
+
+### Local build
+
+On macOS, with Python 3, the Rust toolchain above, and Apple's command-line tools
+(`ditto`, `file`, `lipo`, `otool`, `codesign`) installed, run from this repository:
+
+```sh
+python3 scripts/package_macos.py
+# Optional bundle-version override; does not change Cargo.toml:
+python3 scripts/package_macos.py --package-version 0.1.4
+```
+
+This builds with `cargo build --release --locked` for the **current process's
+native architecture** (arm64 or x86_64, verified with `file` and `lipo`), not a
+universal binary or cross-build by default. An x86_64 Python under Rosetta
+produces an x86_64 artifact. Cargo is
+resolved from PATH, then `~/.cargo/bin/cargo`. Build intermediates stay under
+`target/macos-package/build/`.
+
+### Universal2 (opt-in)
+
+With both `x86_64-apple-darwin` and `aarch64-apple-darwin` Rust targets already
+installed and a suitable Apple SDK, build both locked release targets and merge
+them with `lipo`:
+
+```sh
+python3 scripts/package_macos.py --universal --package-version 0.1.4
+```
+
+The packager never installs targets or tools. It inspects each thin Mach-O before
+merging, verifies exactly the two expected slices independently of slice order,
+and checks dependencies separately for each slice of the merged executable.
+Universal2 outputs use `universal2` instead of the native architecture in their
+names, so they do not overwrite native artifacts. Bundle Info.plist metadata is
+the same as native packaging.
+
+Merging may invalidate thin signatures. The merged executable's actual signature
+is inspected and verified across both architectures. An unsigned or invalid merged
+signature stops packaging with an actionable error, without exporting an app or
+ZIP. Apple Silicon needs valid code integrity. **Only after explicit approval**,
+opt in to ad-hoc signing of the **complete newly generated app**, after its
+Info.plist, receipt, LICENSE and other resources are assembled:
+
+```sh
+python3 scripts/package_macos.py --universal --ad-hoc-sign --package-version 0.1.4
+```
+
+`--ad-hoc-sign` requires `--universal`; it invokes `codesign --force --sign -`
+only on the complete tool-generated app, never on a thin input, an existing
+bundle, or a running app. It verifies the app and all executable architectures
+before archiving and again after export. Nothing inside the app is modified
+after signing. It is **not Developer ID signing or notarization**.
+It is never automatic. A failure still reserves its output directory; a retry
+with the same source/version needs a fresh reservation (existing output paths are
+not reused or removed by the script).
+
+Each local run reserves a new directory under
+`target/macos-package/gentle-emote-desktop-<version>-<arch>-local-<revision>-<dirty|clean>/`
+containing `Gentle Emote Desktop.app`, its attribute-preserving ZIP, a
+`.zip.sha256` checksum sidecar and an external `signature-verification.json`. Existing directories are never overwritten or
+automatically deleted. A failed run may leave an incomplete reserved directory;
+only a successful exit reports final artifacts. The script neither opens the app
+nor changes an already running instance. Close any other listener on port 8001
+before manually opening the bundle.
+
+**These are local, not official release artifacts.** Cargo currently declares
+`0.1.0`; repository release labels such as `v0.1.4` do not silently change the
+bundle version. `--package-version` accepts one to three numeric components
+(major 0–9999, minor/patch 0–99), and changes only packaging metadata. The receipt
+in `Contents/Resources/packaging-receipt.json` records both versions, source SHA,
+dirty state (including untracked files), architecture, dependencies and
+**pre-signing binary evidence**. It also records native/Universal2 mode, all
+architectures and Rust targets, signing intent, and the static-only validation
+scope. Universal receipts include thin inspections and the merged signature
+before requested signing. Final observed signature evidence is external:
+embedding it after signing would invalidate the bundle's resource seal. Dependencies outside Apple's `/System/Library/` and `/usr/lib/`
+are rejected, including unresolved `@rpath` references.
+
+No Developer ID signing, notarization, publication or installation is performed.
+The native executable may retain a linker-generated **ad-hoc signature**; the
+Universal2 app may be explicitly ad-hoc signed as above. Neither is
+Developer ID signing. Gatekeeper may block downloaded copies; this script does
+not bypass security controls. The bundle includes the root LICENSE and a short
+local-build notice, **not a complete third-party license audit in local mode**.
+Prerelease mode below requires validated dependency notices. No custom icon,
+minimum macOS version guarantee, or universal runtime compatibility is claimed.
+Universal2 describes CPU slices, not a minimum supported OS or GPU guarantee.
+Packaging and CLI tests do not launch the app or validate ARM runtime behavior;
+manual checks on Intel and Apple Silicon remain separate from static inspection.
+The renderer and Windows packaging/build behavior are unchanged.
+
+### Clean-source Universal2 prerelease
+
+Use a **new clean committed worktree** of the intended source revision, with both
+Darwin Rust targets installed. Generate the audit into a new directory outside
+the source tree (its parent must already exist), then package from that worktree:
+
+```sh
+python3 -B scripts/audit_macos_licenses.py --output /tmp/emote-v0.1.5-rc.1-notices
+python3 -B scripts/package_macos.py --universal --ad-hoc-sign \
+  --release-tag v0.1.5-rc.1 --license-audit /tmp/emote-v0.1.5-rc.1-notices
+```
+
+`--release-tag v0.1.5-rc.1` maps to numeric bundle version **0.1.5** without
+changing Cargo's version. A conflicting `--package-version` is rejected.
+Release mode requires Universal2, explicit ad-hoc signing and a validated audit;
+`--license-audit DIR` is not accepted in local mode. HEAD supplies the source SHA,
+not a caller-provided revision. The packager requires clean tracked **and
+untracked** source at entry and exit (including `.pi/` if present); it never
+silently ignores development state. It checks HEAD and Cargo.toml/Cargo.lock
+hashes again before export and at completion. A failure at any stage blocks
+release use, even if an incomplete output reservation remains.
+
+The audit validator binds notices to the source commit, both resolved Darwin
+closures, Cargo manifest/lock hashes and exact notice contents. Notices are
+copied to `Contents/Resources/ThirdPartyNotices` and validated again there before
+signing. The embedded prerelease receipt records the exact source commit,
+`source_dirty: false` and a portable manifest hash/package/file-count summary.
+Only successful destination validation establishes `notice_inventory_complete`;
+it does **not** establish a complete legal-license audit. The receipt and external
+`signature-verification.json` preserve the validator's exception records and
+separate inventory/legal status. A copied summary must match the original,
+including exceptions, before the app is signed.
+
+**Public RC license exception — dispatch 0.2.0:** its exact upstream Cargo.toml
+declares MIT, but no original copyright/license notice is available. The human
+approved this prerelease with that explicit exception. The notice inventory
+includes the original declaration and a clearly labeled standard MIT reference
+with exact provenance; the reference is **not dispatch's original notice**, and
+no copyright holder or year is invented. The bundle's README.txt and embedded
+receipt disclose the exception before final signing; the external verification
+receipt records the same exception after signing. Both
+`legal_audit_complete` and `third_party_license_audit_complete` remain **false**;
+validated notice coverage is not a legal guarantee.
+Outputs use
+`target/macos-package/gentle-emote-desktop-v0.1.5-rc.1-universal2-<revision>/`,
+not the local naming scheme, and never overwrite earlier outputs.
+
+**Release verification remains separate:** verify both the exported app and a
+fresh ZIP extraction using `codesign --verify --strict --all-architectures APP`
+and the same command on `APP/Contents/MacOS/gentle-emote-desktop`. The external
+signature receipt covers export only, not ZIP extraction. Intel runtime smoke
+and native Apple Silicon runtime/permissions checks are separate manual steps;
+**ARM runtime remains untested** (`arm_runtime_validated: false`). No minimum
+macOS version or GPU compatibility is promised. Downloaded ad-hoc apps can be
+blocked by Gatekeeper: users must assess trust and use macOS's manual
+Privacy & Security approval flow if appropriate. No quarantine removal or other
+security bypass is automated or recommended here. Publication, Developer ID
+signing and notarization are not performed. Windows releases are unchanged.
+
+CLI and fake-toolchain checks (no real Cargo build, signing or app launch):
+
+```sh
+python3 -B -m unittest discover -s tests -p 'test_package_macos.py'
+```
+
 ## Session compatibility
 
 Session-aware frames use `X-Emote-Session-Id` plus stream/sequence headers on the
