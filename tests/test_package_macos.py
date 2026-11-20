@@ -1,5 +1,6 @@
 """Public CLI checks; never build or launch the desktop."""
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -113,7 +114,8 @@ class PackagingCliTests(unittest.TestCase):
 # A public-CLI subprocess with fake external tools, never a native build/sign.
 # All state (including the copy of the packager) lives in OS temporary storage.
 TOOLCHAIN = r'''
-import hashlib, json, pathlib, platform, runpy, shutil, subprocess, sys, zipfile
+import hashlib, json, os, pathlib, platform, runpy, shutil, subprocess, sys, zipfile
+real_run = subprocess.run
 root = pathlib.Path(__file__).resolve().parent
 scenario = sys.argv.pop(1)
 platform.system = lambda: "Darwin"
@@ -144,6 +146,16 @@ def fake_run(command, **kwargs):
             out = json.dumps({"packages": [{"manifest_path": str(root / "Cargo.toml"),
                                           "version": "0.1.0"}]})
         else:
+            env = kwargs.get("env") or os.environ
+            with (root / "build-env.jsonl").open("a") as log:
+                log.write(json.dumps({k: env[k] for k in
+                    ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER",
+                     "RUSTC", "RUSTC_WORKSPACE_WRAPPER") if k in env}) + "\n")
+            if scenario == "remaps" and env.get("RUSTC_WRAPPER") != os.environ.get("RUSTC_WRAPPER"):
+                probe = real_run([env["RUSTC_WRAPPER"], "/fake/rustc", "--crate-name", "fixture"],
+                                 env=env, text=True, capture_output=True, check=True)
+                with (root / "remaps.jsonl").open("a") as log:
+                    log.write(probe.stdout)
             target = args[args.index("--target") + 1]
             dest = pathlib.Path(args[-1]) / target / "release/gentle-emote-desktop"
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -152,6 +164,8 @@ def fake_run(command, **kwargs):
                 (root / "Cargo.lock").write_text("mutated")
     elif tool == "file":
         out = "Mach-O " + pathlib.Path(args[-1]).read_text()
+        if scenario == "file-paths":
+            out += "\\n/var/folders/random temp/slice: Mach-O\\n/Users/private person/source: Mach-O"
     elif tool == "lipo":
         if "-create" in args:
             pathlib.Path(args[-1]).write_text("x86_64 arm64")
@@ -228,8 +242,8 @@ def validate_audit(audit_dir, source_root):
 
 
 class PackagingToolchainTests(unittest.TestCase):
-    def fixture(self, scenario="clean", release=True, native=False, sign=True):
-        scratch = tempfile.TemporaryDirectory(prefix="emote-package-toolchain-")
+    def fixture(self, scenario="clean", release=True, native=False, sign=True, env=None):
+        scratch = tempfile.TemporaryDirectory(prefix="emote package toolchain ")
         self.addCleanup(scratch.cleanup)
         root = pathlib.Path(scratch.name)
         (root / "scripts").mkdir()
@@ -258,6 +272,11 @@ class PackagingToolchainTests(unittest.TestCase):
             (root / "reject-audit").touch()
         if scenario == "invalid-copy":
             (root / "reject-copy").touch()
+        if scenario == "remaps":
+            wrapper = root / "inherited wrapper"
+            wrapper.write_text("#!" + sys.executable + "\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+            wrapper.chmod(0o755)
+            env["RUSTC_WRAPPER"] = str(wrapper)
         launcher = root / "toolchain.py"
         launcher.write_text(TOOLCHAIN)
         args = [] if native else ["--universal"]
@@ -265,11 +284,92 @@ class PackagingToolchainTests(unittest.TestCase):
             args += ["--ad-hoc-sign"]
         if release:
             args += ["--release-tag", "v0.1.5-rc.1", "--license-audit", str(audit)]
+        if release and env is None:
+            env = os.environ.copy()
+            env["RUSTC_WRAPPER"] = ""  # This fixture explicitly selects no wrapper.
+        if scenario == "unset-wrapper":
+            env.pop("RUSTC_WRAPPER", None)
+            self.wrapper_files_before = {str(p.relative_to(root)): p.read_bytes()
+                                         for p in root.rglob("*") if p.is_file()}
         result = subprocess.run([sys.executable, "-B", str(launcher), scenario, *args],
-                                cwd=root, capture_output=True, text=True, timeout=10)
+                                cwd=root, capture_output=True, text=True, timeout=10, env=env)
         log = root / "calls.jsonl"
         calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         return root, result, calls
+
+    def test_unset_release_wrapper_fails_without_writes_or_tool_calls(self):
+        root, result, calls = self.fixture("unset-wrapper")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr,
+                         "Packaging failed: release packaging requires an explicit RUSTC_WRAPPER: "
+                         "select the intended wrapper executable via RUSTC_WRAPPER or set it "
+                         "explicitly empty to choose none; a config-only wrapper cannot be "
+                         "transparently preserved\n")
+        self.assertEqual(calls, [])
+        self.assertFalse((root / "target").exists())
+        self.assertEqual({str(p.relative_to(root)): p.read_bytes()
+                          for p in root.rglob("*") if p.is_file()}, self.wrapper_files_before)
+
+    def test_file_paths_never_enter_receipts(self):
+        root, result, _ = self.fixture("file-paths")
+        self.assert_success_output(root, result)
+        output = next(root.glob("target/macos-package/*-v0.1.5-rc.1-universal2-*"))
+        receipt = json.loads((output / "Gentle Emote Desktop.app/Contents/Resources/packaging-receipt.json").read_text())
+        self.assertEqual(receipt["file"], "Mach-O universal2 (x86_64, arm64)")
+        for arch, thin in receipt["thin_inspections"].items():
+            self.assertEqual(thin["file"], "Mach-O " + arch)
+        for path in (output / "signature-verification.json",
+                     output / "Gentle Emote Desktop.app/Contents/Resources/packaging-receipt.json"):
+            text = path.read_text()
+            for private in (str(root), "/var/folders/", "/Users/", "random temp"):
+                self.assertNotIn(private, text)
+
+    def test_release_remaps_both_targets_without_shadowing_flags(self):
+        for encoded in (None, "", "-C\x1fdebuginfo=2\x1f--cfg=with space"):
+            with self.subTest(encoded=encoded):
+                env = os.environ.copy()
+                env["RUSTFLAGS"] = "-C overflow-checks=yes --cfg=legacy"
+                env["CARGO_HOME"] = "/Users/private person/cargo home"
+                env["RUSTC"] = "/chosen compiler"
+                env["RUSTC_WORKSPACE_WRAPPER"] = "/chosen workspace wrapper"
+                # The fixture's existing wrapper records rustc argv, no compiler.
+                env.pop("CARGO_ENCODED_RUSTFLAGS", None)
+                if encoded is not None:
+                    env["CARGO_ENCODED_RUSTFLAGS"] = encoded
+                root, result, calls = self.fixture("remaps", env=env)
+                self.assert_success_output(root, result)
+                builds = [c for c in calls if c[1] == "build"]
+                self.assertEqual([c[c.index("--target") + 1] for c in builds],
+                                 ["x86_64-apple-darwin", "aarch64-apple-darwin"])
+                environments = [json.loads(s) for s in (root / "build-env.jsonl").read_text().splitlines()]
+                self.assertEqual(len(environments), 2)
+                for observed in environments:
+                    self.assertEqual(observed["RUSTFLAGS"], env["RUSTFLAGS"])
+                    self.assertEqual(observed["RUSTC"], env["RUSTC"])
+                    self.assertEqual(observed["RUSTC_WORKSPACE_WRAPPER"], env["RUSTC_WORKSPACE_WRAPPER"])
+                    self.assertEqual(observed.get("CARGO_ENCODED_RUSTFLAGS"), encoded)
+                    self.assertNotEqual(observed["RUSTC_WRAPPER"], env["RUSTC_WRAPPER"])
+                probes = [json.loads(s) for s in (root / "remaps.jsonl").read_text().splitlines()]
+                self.assertEqual(len(probes), 2)
+                for flags in probes:
+                    self.assertIn("--remap-path-prefix=" + str(root) + "=/source", flags)
+                    self.assertIn("--remap-path-prefix=" + env["CARGO_HOME"] + "=/cargo", flags)
+                    self.assertIn("--remap-path-prefix=" + str(root / "target/macos-package/build") + "=/build", flags)
+                    self.assertIn("--remap-path-prefix=" + tempfile.gettempdir() + "=/build", flags)
+
+    def assert_success_output(self, root, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        output = next(root.glob("target/macos-package/*-v0.1.5-rc.1-universal2-*")).resolve()
+        archive = output / (output.name + ".zip")
+        self.assertEqual(result.stdout,
+                         "Reserved output: {} (failure may leave an incomplete directory)\n"
+                         "Building Universal2 release (no application launch)...\n"
+                         "Bundle: {}\nZIP: {}\nSHA-256: {}\n"
+                         "Signature class: ad-hoc; not notarized; explicit ad-hoc signing performed.\n"
+                         .format(output, output / "Gentle Emote Desktop.app", archive,
+                                 str(archive) + ".sha256"))
 
     def test_complete_bundle_signed_last_and_release_receipt(self):
         root, result, calls = self.fixture()
@@ -401,7 +501,9 @@ class PackagingToolchainTests(unittest.TestCase):
                     self.assertFalse((root / "target").exists())
 
     def test_native_default_preserves_target_and_no_signing(self):
-        root, result, calls = self.fixture(release=False, native=True, sign=False)
+        env = os.environ.copy()
+        env.pop("RUSTC_WRAPPER", None)
+        root, result, calls = self.fixture(release=False, native=True, sign=False, env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stderr, "")
         builds = [c for c in calls if c[1] == "build"]

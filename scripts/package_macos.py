@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build a local or clean-source prerelease macOS bundle without publishing."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -50,11 +51,66 @@ def require_frozen_source(expected, observed):
         raise RuntimeError("release source changed during packaging")
 
 
-def run(*args):
+def run(*args, env=None):
     return subprocess.run(
-        [str(arg) for arg in args], cwd=ROOT, check=True,
+        [str(arg) for arg in args], cwd=ROOT, check=True, env=env,
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
+
+
+def selected_release_wrapper():
+    if "RUSTC_WRAPPER" not in os.environ:
+        raise RuntimeError(
+            "release packaging requires an explicit RUSTC_WRAPPER: "
+            "select the intended wrapper executable via RUSTC_WRAPPER or set it "
+            "explicitly empty to choose none; a config-only wrapper cannot be "
+            "transparently preserved"
+        )
+    return os.environ["RUSTC_WRAPPER"]
+
+
+@contextmanager
+def release_build_environment(enabled, build):
+    if not enabled:
+        yield None
+        return
+    inherited = selected_release_wrapper()
+    # Do not set RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS: either would shadow
+    # Cargo config flags when absent, or change inherited precedence/tokenization.
+    # A chained compiler wrapper appends only remaps to Cargo's resolved argv.
+    with tempfile.TemporaryDirectory(prefix="emote-rustc-remap-") as scratch:
+        prefixes = [
+            (Path(tempfile.gettempdir()), "/build"),
+            (Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo"), "/cargo"),
+            (ROOT, "/source"),
+            (build, "/build"),
+        ]
+        remaps = []
+        for path, replacement in prefixes:
+            # rustc uses the last matching prefix. Broad temp mappings precede
+            # specific Cargo/source/build mappings; cover macOS /private aliases.
+            variants = [str(path.absolute()), str(path.resolve())]
+            variants += [p[len("/private"):] for p in variants
+                         if p.startswith("/private/var/")]
+            for absolute in dict.fromkeys(variants):
+                remaps.append("--remap-path-prefix=" + absolute + "=" + replacement)
+        wrapper = Path(scratch) / "rustc-remap"
+        wrapper.write_text(
+            "#!" + sys.executable + "\n"
+            "import os, sys\n"
+            "command = sys.argv[1:]\n"
+            "if '--crate-name' in command:\n"
+            "    command += " + repr(remaps) + "\n"
+            "inherited = " + repr(inherited) + "\n"
+            "if inherited:\n"
+            "    command.insert(0, inherited)\n"
+            "os.execvpe(command[0], command, os.environ)\n",
+            encoding="utf-8",
+        )
+        wrapper.chmod(0o755)
+        env = os.environ.copy()
+        env["RUSTC_WRAPPER"] = str(wrapper)
+        yield env
 
 
 def signature(executable, universal=False):
@@ -84,7 +140,7 @@ def inspect(executable, arch):
     if arches != [arch] or "Mach-O" not in file_description or arch not in file_description:
         raise RuntimeError("executable is not a native-only Mach-O: " + file_description)
     dependencies = inspect_dependencies(executable)
-    return file_description, dependencies, signature(executable)
+    return "Mach-O " + arch, dependencies, signature(executable)
 
 
 def inspect_dependencies(executable, arch=None):
@@ -128,10 +184,14 @@ def inspect_universal(executable, ad_hoc_sign):
             .format(before_signing["class"])
         )
     # Signing must wait until Info.plist and every resource exist.
-    return description, dependencies, before_signing
+    return "Mach-O universal2 (x86_64, arm64)", dependencies, before_signing
 
 
 def package(args):
+    if args.release_tag:
+        # Reject unknown config-only wrapper selection before tool calls or
+        # output reservation; the context manager also enforces this boundary.
+        selected_release_wrapper()
     if platform.system() != "Darwin":
         raise RuntimeError("packaging requires macOS; cross-compilation is not supported")
     arch = platform.machine()
@@ -180,19 +240,20 @@ def package(args):
         "Universal2" if args.universal else "native"), flush=True)
     binaries = []
     thin_inspections = {}
-    for build_target, build_arch in zip(targets, architectures):
-        result = run(cargo, "build", "--release", "--locked", "--target", build_target,
-                     "--target-dir", build)
-        print(result.stdout, end="")
-        print(result.stderr, end="", file=sys.stderr)
-        binary = build / build_target / "release" / NAME
-        if args.universal:
-            description, dependencies, code_signature = inspect(binary, build_arch)
-            thin_inspections[build_arch] = {
-                "file": description, "dependencies": dependencies,
-                "code_signature": code_signature,
-            }
-        binaries.append(binary)
+    with release_build_environment(bool(args.release_tag), build) as build_env:
+        for build_target, build_arch in zip(targets, architectures):
+            result = run(cargo, "build", "--release", "--locked", "--target", build_target,
+                         "--target-dir", build, env=build_env)
+            print(result.stdout, end="")
+            print(result.stderr, end="", file=sys.stderr)
+            binary = build / build_target / "release" / NAME
+            if args.universal:
+                description, dependencies, code_signature = inspect(binary, build_arch)
+                thin_inspections[build_arch] = {
+                    "file": description, "dependencies": dependencies,
+                    "code_signature": code_signature,
+                }
+            binaries.append(binary)
     # Only this invocation's system-temp stage is automatically removed.
     with tempfile.TemporaryDirectory(prefix="emote-macos-package-") as scratch:
         stage = Path(scratch)
@@ -367,7 +428,11 @@ def main():
     parser = argparse.ArgumentParser(
         description="Build a local or prerelease macOS .app and ZIP; native-only by default, "
                     "Universal2 opt-in; not notarized. No automatic signing, "
-                    "publication, installation, or application launch.",
+                    "publication, installation, or application launch. Prerelease compiler "
+                    "source paths are remapped to /cargo, /source and /build. "
+                    "Prereleases require RUSTC_WRAPPER explicitly set to the intended "
+                    "wrapper executable or empty to choose none; config-only wrappers "
+                    "cannot be transparently preserved.",
         epilog="Outputs: target/macos-package/<name>-<version>-<arch>-local-<revision>"
                "[-dirty|-clean]/; prereleases use <name>-<release-tag>-<arch>-<revision>/. "
                "Existing output directories are never reused.",

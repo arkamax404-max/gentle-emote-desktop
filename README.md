@@ -282,7 +282,9 @@ dirty state (including untracked files), architecture, dependencies and
 **pre-signing binary evidence**. It also records native/Universal2 mode, all
 architectures and Rust targets, signing intent, and the static-only validation
 scope. Universal receipts include thin inspections and the merged signature
-before requested signing. Final observed signature evidence is external:
+before requested signing. The `file` fields contain portable Mach-O type and
+validated architecture labels, never raw `file` diagnostics (which may include
+host-local slice paths). Final observed signature evidence is external:
 embedding it after signing would invalidate the bundle's resource seal. Dependencies outside Apple's `/System/Library/` and `/usr/lib/`
 are rejected, including unresolved `@rpath` references.
 
@@ -303,7 +305,11 @@ The renderer and Windows packaging/build behavior are unchanged.
 
 Use a **new clean committed worktree** of the intended source revision, with both
 Darwin Rust targets installed. Generate the audit into a new directory outside
-the source tree (its parent must already exist), then package from that worktree:
+the source tree (its parent must already exist), then package from that worktree.
+Before packaging, explicitly select `RUSTC_WRAPPER`: export the intended wrapper
+executable path, or export an empty value to choose no wrapper. This choice
+explicitly overrides Cargo's configured wrapper. Do not select an empty value
+unless disabling any configured wrapper is intended.
 
 ```sh
 python3 -B scripts/audit_macos_licenses.py --output /tmp/emote-v0.1.5-rc.1-notices
@@ -320,6 +326,20 @@ untracked** source at entry and exit (including `.pi/` if present); it never
 silently ignores development state. It checks HEAD and Cargo.toml/Cargo.lock
 hashes again before export and at completion. A failure at any stage blocks
 release use, even if an incomplete output reservation remains.
+
+Prerelease builds remap compiler source paths: Cargo home to `/cargo`, the frozen
+workspace to `/source`, and build intermediates/system temporary paths to `/build`.
+This is rustc `--remap-path-prefix`, not post-build binary stripping or a change
+to dependency files or license payloads. With `RUSTC_WRAPPER` unset, release
+packaging fails before tool calls or output reservation: a config-only wrapper
+cannot be transparently preserved. A temporary compiler shim chains the exact
+explicitly selected wrapper executable (including paths with spaces), or no
+wrapper when explicitly empty, and appends remaps to Cargo's resolved arguments.
+`RUSTC`, `RUSTC_WORKSPACE_WRAPPER`, `RUSTFLAGS` and `CARGO_ENCODED_RUSTFLAGS`
+(including empty values) remain unchanged; Cargo's compiler-flag resolution is
+not replaced. Local builds neither require this selection nor enable these
+remaps. Fresh release builds and separate artifact privacy inspection remain
+required: fake-toolchain tests do not prove a real binary contains no host paths.
 
 The audit validator binds notices to the source commit, both resolved Darwin
 closures, Cargo manifest/lock hashes and exact notice contents. Notices are
