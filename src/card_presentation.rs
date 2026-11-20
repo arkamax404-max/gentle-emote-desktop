@@ -21,9 +21,15 @@ impl CardId {
 pub(crate) struct CardPresentation {
     order: Vec<CardId>,
     dismissed: HashSet<CardId>,
+    tmp_dismissed: HashSet<CardId>,
     fallback_dismissed: bool,
 }
 impl CardPresentation {
+    pub(crate) fn is_tmp(tile: &ClockTile) -> bool {
+        // Raw sender metadata, never the stale clock copy or normalized pixels.
+        tile.name.as_deref() == Some("TMP")
+    }
+
     pub(crate) fn visible(
         &mut self,
         mut tiles: Vec<ClockTile>,
@@ -39,8 +45,12 @@ impl CardPresentation {
         }
         self.fallback_dismissed = false;
         for tile in &tiles {
+            let id = CardId::of(tile);
+            if !Self::is_tmp(tile) {
+                self.tmp_dismissed.remove(&id);
+            }
             if tile.snapshot.state == SessionState::Normal {
-                self.dismissed.remove(&CardId::of(tile));
+                self.dismissed.remove(&id);
             }
         }
         self.order
@@ -51,7 +61,10 @@ impl CardPresentation {
                 self.order.push(id);
             }
         }
-        tiles.retain(|tile| !self.dismissed.contains(&CardId::of(tile)));
+        tiles.retain(|tile| {
+            let id = CardId::of(tile);
+            !self.dismissed.contains(&id) && !self.tmp_dismissed.contains(&id)
+        });
         tiles.sort_by_key(|tile| self.order.iter().position(|id| *id == CardId::of(tile)));
         (tiles, false)
     }
@@ -65,9 +78,11 @@ impl CardPresentation {
         }
     }
 
-    pub(crate) fn dismiss(&mut self, id: CardId) {
+    pub(crate) fn dismiss(&mut self, id: CardId, tmp: bool) {
         if id == CardId::GlobalFallback {
             self.fallback_dismissed = true;
+        } else if tmp {
+            self.tmp_dismissed.insert(id);
         } else {
             self.dismissed.insert(id);
         }

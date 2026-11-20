@@ -3027,6 +3027,135 @@ fn card_reorder_targets_identity_survives_updates_and_appends_new_cards() {
 }
 
 #[test]
+fn card_tmp_close_persists_until_title_changes_for_session_and_legacy() {
+    for id in ["different-id", ""] {
+        for initial_clock in [false, true] {
+            let (ctx, mut app, address) = setup_defaults();
+            session_request_named(
+                address,
+                id,
+                1,
+                "emote",
+                42,
+                initial_clock.then_some("clock"),
+                Some("TMP"),
+            );
+            session_request(address, "neighbor", 1, "emote", 84);
+            step(&ctx, &mut app, vec![]);
+            if !id.is_empty() {
+                primary_click(&ctx, &mut app, Pos2::new(50.0, 40.0));
+            }
+            let pending = (!id.is_empty()).then(|| focus_poll(address, id, 2).unwrap());
+            card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+            assert!(painted_label(&menu::take(), "Close").is_some());
+            step(&ctx, &mut app, vec![]);
+            card_action(&ctx, &mut app, "Close");
+            for (seq, state) in [(3, None), (4, Some("clock")), (5, None)] {
+                session_request_named(address, id, seq, "emote", 126, state, Some("TMP"));
+                let hidden = step(&ctx, &mut app, vec![]);
+                assert_eq!(avatar_names(&hidden), ["emote-session:neighbor"]);
+                assert!(clock_meshes(&hidden).is_empty());
+                assert!(
+                    !hidden.viewport_output[&egui::ViewportId::ROOT]
+                        .commands
+                        .contains(&ViewportCommand::Close)
+                );
+            }
+            if !id.is_empty() {
+                assert_eq!(focus_poll(address, id, 6), pending);
+                assert_eq!(
+                    avatar_names(&step(&ctx, &mut app, vec![])),
+                    ["emote-session:neighbor"]
+                );
+            }
+            // A changed title restores even a clock, not just an ordinary image.
+            session_request_named(address, id, 7, "emote", 42, Some("clock"), Some("Renamed"));
+            let restored = step(&ctx, &mut app, vec![]);
+            assert_eq!(clock_meshes(&restored).len(), 1);
+            assert_eq!(avatar_names(&restored), ["emote-session:neighbor"]);
+            drop(restored);
+            // Returning to TMP does not reinstate the old dismissal.
+            session_request_named(address, id, 8, "emote", 42, None, Some("TMP"));
+            let restored = step(&ctx, &mut app, vec![]);
+            let expected = if id.is_empty() {
+                "emote"
+            } else {
+                "emote-session:different-id"
+            };
+            assert_eq!(
+                avatar_names(&restored),
+                [expected, "emote-session:neighbor"]
+            );
+        }
+    }
+}
+
+#[test]
+fn card_tmp_menu_matches_exact_source_title_not_identity() {
+    for (id, title, closable) in [
+        ("TMP", None, false),
+        ("TMP", Some("Other"), false),
+        ("a", Some("tmp"), false),
+        ("a", Some("Tmp"), false),
+        ("a", Some("TMP-suffix"), false),
+        ("a", Some("prefixTMP"), false),
+        ("a", Some("TMP"), true),
+        ("", Some("TMP"), true),
+    ] {
+        let (ctx, mut app, address) = setup_defaults();
+        session_request_named(address, id, 1, "emote", 42, None, title);
+        card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+        let child = menu::take();
+        assert_eq!(
+            painted_label(&child, "Close").is_some(),
+            closable,
+            "id={id}, title={title:?}"
+        );
+        assert!(painted_label(&child, "Close clock").is_none());
+        assert_eq!(avatars(&step(&ctx, &mut app, vec![])).len(), 1);
+    }
+}
+
+#[test]
+fn card_tmp_last_close_waits_and_stale_menu_cannot_close_renamed_avatar() {
+    let (ctx, mut app, address) = setup_defaults();
+    session_request_named(address, "a", 1, "emote", 42, None, Some("TMP"));
+    card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+    let close = painted_label(&menu::take(), "Close").unwrap();
+    session_request_named(address, "a", 2, "emote", 84, None, Some("Real title"));
+    menu::events(vec![
+        Event::PointerMoved(close),
+        button(close, PointerButton::Primary, true),
+    ]);
+    step(&ctx, &mut app, vec![]);
+    menu::events(vec![button(close, PointerButton::Primary, false)]);
+    step(&ctx, &mut app, vec![]);
+    assert_eq!(
+        avatar_names(&step(&ctx, &mut app, vec![])),
+        ["emote-session:a"]
+    );
+    session_request_named(address, "a", 3, "emote", 42, None, Some("TMP"));
+    card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+    card_action(&ctx, &mut app, "Close");
+    assert_waiting(&step(&ctx, &mut app, vec![]));
+    session_request(address, "a", 4, "emote/heartbeat", 0);
+    assert_waiting(&step(&ctx, &mut app, vec![]));
+    // Missing title is also an observed change away from TMP.
+    session_request(address, "a", 5, "emote", 84);
+    assert_eq!(
+        avatar_names(&step(&ctx, &mut app, vec![])),
+        ["emote-session:a"]
+    );
+    drop(app);
+    let (ctx, mut app, address) = setup_defaults();
+    session_request_named(address, "a", 1, "emote", 42, None, Some("TMP"));
+    assert_eq!(
+        avatar_names(&step(&ctx, &mut app, vec![])),
+        ["emote-session:a"]
+    );
+}
+
+#[test]
 fn card_clock_close_is_local_survives_clocks_and_restores_normal_image() {
     let (ctx, mut app, address) = setup_defaults();
     session_request_state(address, "a", 1, "emote", 42, Some("clock"));

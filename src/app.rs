@@ -333,11 +333,17 @@ impl EmoteApp {
         let (snapshots, show_clock) = self.latest.display_snapshot();
         let (snapshots, show_clock) = self.presentation.visible(snapshots, show_clock);
         let visible_cards: Vec<_> = if show_clock {
-            vec![(CardId::GlobalFallback, true)]
+            vec![(CardId::GlobalFallback, true, false)]
         } else {
             snapshots
                 .iter()
-                .map(|tile| (CardId::of(tile), tile.snapshot.state == SessionState::Clock))
+                .map(|tile| {
+                    (
+                        CardId::of(tile),
+                        tile.snapshot.state == SessionState::Clock,
+                        CardPresentation::is_tmp(tile),
+                    )
+                })
                 .collect()
         };
         let mut card_hits = Vec::new();
@@ -739,12 +745,12 @@ impl EmoteApp {
                 let content = egui::Frame::new().inner_margin(8).show(ui, |ui| {
                     // Resolve the stored identity again on each pass: indices and
                     // clock state may change while the native child stays open.
-                    if let Some((index, (_, clock))) =
+                    if let Some((index, (_, clock, tmp))) =
                         self.menu_target.as_ref().and_then(|target| {
                             visible_cards
                                 .iter()
                                 .enumerate()
-                                .find(|(_, (id, _))| id == target)
+                                .find(|(_, (id, _, _))| id == target)
                         })
                     {
                         let (previous, next) = if self.vertical_stacking {
@@ -767,11 +773,12 @@ impl EmoteApp {
                                 self.menu_open = false;
                             }
                         }
-                        if *clock {
-                            let close = ui.button("Close clock");
+                        if *clock || *tmp {
+                            let close = ui.button(if *tmp { "Close" } else { "Close clock" });
                             content_width = content_width.max(close.rect.width());
                             if close.clicked() {
-                                self.presentation.dismiss(visible_cards[index].0.clone());
+                                self.presentation
+                                    .dismiss(visible_cards[index].0.clone(), *tmp);
                                 self.menu_open = false;
                             }
                         }
