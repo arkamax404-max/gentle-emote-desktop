@@ -13,6 +13,10 @@ macOS and Glow on Windows/Linux; no renderer flag is needed:
 
 ```sh
 cargo run
+# Optional absolute agent-directory override (also useful for Finder launch):
+cargo run -- --agent-dir /absolute/path/to/agent
+# Help exits without a GUI or receiver:
+cargo run -- --help
 ```
 
 If Cargo is not on PATH on the development host, use the full path to the
@@ -54,9 +58,9 @@ Exact OS error codes and text are host-specific.
 | Primary click on an active session card | Queue a focus request for that session's Herdr TUI panel; a compatible sender receives it on its next accepted frame or idle heartbeat |
 | Primary-button drag | Ask the OS to move the window |
 | Right-click anywhere | Open a separate options window: avatar-size slider with five steps x1–x5 (the avatar's 64-point image renders at that many points per source texel, x2 initial) |
-| Right-click → Transparent background | Checked initially at 45% transparency (opacity 55), with the slider enabled; uncheck to reset to opaque (0%) and disable the slider |
-| Right-click → Background transparency | While checked, adjust background-only transparency: 0% opaque, 100% invisible; for this session only |
-| Right-click → Background color | Expand the RGB picker to choose the background color (black unless saved); independent of transparency, saved globally for this desktop user |
+| Right-click → Transparent background | Restore the shared checkbox state (checked at 45% transparency unless saved); uncheck to request opaque (0%) and disable the slider after confirmation |
+| Right-click → Background transparency | While checked, request background-only transparency: 0% opaque, 100% invisible; shared across restarts/projects using the selected agent directory |
+| Right-click → Background color | Expand the RGB picker to request a background color (black unless saved); independent of transparency, applied only after shared-store confirmation |
 | Right-click → No frame | Hide decorative frames and leave transparent 5 px separators; preserve the remaining background; checked by default, for this session only |
 | Right-click → Vertical / Horizontal | Select Vertical or Horizontal stacking; Vertical is initial, for this session only |
 | Right-click a card → Move up / Move down | Move that card one visible position in Vertical stacking; end positions are disabled |
@@ -146,9 +150,9 @@ composition. A framed single avatar
 uses the same clear-opening inset as a framed multi-avatar tile; **No frame**
 retains its borderless fit. Nonzero transparency hides frames, independently of that
 checkbox; changing transparency does not reset the **No frame** selection.
-The checkboxes, background transparency and stacking selection reset on restart.
-Only the background RGB color persists across restarts and projects for this desktop user.
-Avatars start at **x2**, with **45% background transparency**, **No frame**
+Background RGB, transparency and its checkbox share the selected agent directory
+across restarts and projects (on supported persistence platforms). Size, **No frame** and stacking reset on restart.
+Without a valid saved transparency setting, avatars start at **x2**, with **45% background transparency**, **No frame**
 checked and **Vertical** stacking; no decorative frame is shown by default. The waiting surface has no decorative frame before an image arrives and keeps
 its native 192×192 initial square at every slider step; only actual avatars or
 the clock fallback derive computed content sizes (the clock draws the
@@ -171,11 +175,11 @@ collapse it again to return to the compact menu. The selected color applies to
 the waiting surface, avatar cards, session clocks and global fallback clock.
 The existing transparency slider applies independently to that color, including
 when transparency is disabled (fully opaque). Black is used when no valid saved color
-is available. The selection is saved immediately when RGB changes; save failures
-retain the live color without interrupting the app. Both controls change only the background;
+is available. Changes are submitted to the shared store in the background and
+apply only after confirmation; errors retain the last confirmed color. Both controls change only the background;
 received image pixels and their alpha, embedded labels, clock artwork and the
-opaque options menu are unchanged. This desktop-only setting does not configure
-the sender or any HTML/serial LED display. Intermediate transparency retains the 8-pixel rounded background
+opaque options menu are unchanged. These shared `desktop` fields do not modify source-owned `image` fields or any
+HTML/serial LED display. Intermediate transparency retains the 8-pixel rounded background
 and image contour, including with a single avatar. The checkbox stays checked
 at 0% and partial values. Unchecking resets to 0% transparency (fully opaque),
 not a remembered partial value. Any opacity below 100%
@@ -186,23 +190,43 @@ pixels (including the sender's bottom gap) stay black; this is not black-color
 removal. On Windows, any background opacity below 100% disables the native undecorated
 window shadow and its thin perimeter; only 100% restores the opaque shadow
 policy. Native visual verification of shadow removal
-is still required. The choice is session-only and
-resets on restart. There is no click-through, general window/settings persistence, background
+is still required. Transparency and its checkbox are saved together on change by the background
+worker; failures retain the last confirmed selection and show a nonfatal error. Checked at 0% remains checked after restart,
+so the slider stays enabled. There is no click-through, general window/settings persistence, background
 service, installer, or automatic sender configuration.
 
-The dedicated color file is `%APPDATA%/gentle-emote-desktop/background-color.txt`
-on Windows, `$XDG_CONFIG_HOME/gentle-emote-desktop/background-color.txt` on Linux
-(or `$HOME/.config/gentle-emote-desktop/background-color.txt` when XDG is unset),
-and `$HOME/Library/Application Support/gentle-emote-desktop/background-color.txt`
-on macOS. Roots must be absolute and nonempty; an invalid configured root disables
-persistence, never falling back to the current project. The strict format is lowercase
-`#rrggbb` with an optional single LF newline; saves include that newline. Startup
-reads at most nine bytes and uses black for missing, malformed, oversized or
-unreadable files, without repairing them. Only an actual RGB change creates the
-parent directory and writes this file. Writes are simple overwrites, not guaranteed
-atomic; simultaneous desktop instances use last-writer-wins. No other settings or
-sender/LED files are read or saved. Library/embedding `EmoteApp::new(receiver)`
-remains filesystem-free; only the native entry point opts in by supplying the path.
+### One shared appearance source
+
+Native desktop uses only `<agentDir>/extensions/gentle-emote/appearance.json`,
+owned by the Gentle Emote shared contract. Resolution is **`--agent-dir ABSOLUTE`
+> `PI_CODING_AGENT_DIR` > `$HOME/.pi/agent`**. Explicit empty/relative roots are
+errors, not fallback requests. There is no project-relative store, network
+settings service, sender-process requirement, or legacy import/deletion.
+
+Missing source means black, opacity 55, checked, revision 0 **in memory only**;
+startup never writes defaults. A worker reloads at startup, on panel open and
+after conflicts, and polls every 500 ms outside render. RGB patches change only
+RGB; opacity and checkbox are one grouped patch. Controls apply confirmed
+snapshots only. Errors retain the last good display, show a notice on the main
+surface and details in options; conflicts refresh without replaying your edit.
+
+Saves use revision CAS under an atomic private directory lock, then a synced
+sibling temporary file and atomic rename. Never automatically remove a stale
+lock or retry a committed-but-durability-uncertain save. See the
+[exact format, locking, security boundary and recovery notes](docs/appearance-contract.md).
+
+**Platform limit:** Unix persistence has same-user/private-mode guards. Windows
+persistence is explicitly unsupported pending the owner's ACL contract; the app
+still receives/renders with in-memory defaults, shows the error, and disables
+shared appearance edits. No Windows ACL parity or cross-platform runtime result
+is claimed.
+
+Old `background-color.txt` and `background-opacity.txt` files are left untouched:
+native startup neither reads nor writes them. The legacy library modules and
+explicit `with_background_*_path` builders remain opt-in compatibility APIs,
+not the native persistence path. `EmoteApp::new(receiver)` remains filesystem-free;
+`with_shared_appearance(store, context)` installs the worker and prevents later
+legacy-path opt-in.
 
 ## macOS app and ZIP
 
@@ -464,10 +488,12 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite contains **120 tests** on Windows: 34 receiver, 56 headless
-window, 10 session lifecycle, 3 background-color store, 9 idle-clock image, and
-8 library unit tests (1 shadow-policy, 1 receiver display, 6 session helpers).
-The macOS-only native startup test is ignored by default and counted separately.
+On macOS the current suite defines **153 tests**: 34 receiver, 64 headless
+window, 10 session lifecycle, 3 legacy background-color store, 1 legacy background-opacity store,
+23 shared appearance parser/store/CLI/UI tests, 9 idle-clock image,
+8 library unit tests (1 shadow-policy, 1 receiver display, 6 session helpers),
+and 1 ignored native startup test. Unix-specific persistence/UI tests are excluded
+on Windows; Windows execution is not claimed.
 See the [testing guide](docs/testing.md) for the exact breakdown, recorded
 limits, and the graphical `native_smoke` example.
 

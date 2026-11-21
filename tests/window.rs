@@ -3728,6 +3728,69 @@ fn background_color_persistence_save_failure_keeps_live_rgb() {
 }
 
 #[test]
+fn background_opacity_persistence_saves_controls_and_restores_checked_zero() {
+    let scratch = ColorScratch::new();
+    let path = scratch.0.join("nested/background-opacity.txt");
+    let rgb = scratch.0.join("background-color.txt");
+    std::fs::write(&rgb, b"#2080e0\n").unwrap();
+    let (ctx, app, _) = setup_defaults();
+    let mut app = app.with_background_opacity_path(path.clone());
+    step(&ctx, &mut app, vec![]);
+    assert!(!path.exists(), "startup must not save defaults");
+    for fraction in [0.5, 1.0, 0.0] {
+        set_background_transparency(&ctx, &mut app, fraction, true);
+        assert_eq!(
+            gentle_emote_desktop::background_opacity::load(&path),
+            (100 - (fraction * 100.0) as u8, true),
+            "slider saves before Drop"
+        );
+    }
+    drop(app);
+    let (ctx, app, _) = setup_defaults();
+    let mut app = app.with_background_opacity_path(path.clone());
+    assert!(has_black_background(&step(&ctx, &mut app, vec![])));
+    // Checked zero must reload as checked, leaving the slider usable.
+    set_background_transparency(&ctx, &mut app, 0.5, true);
+    toggle_background(&ctx, &mut app);
+    assert_eq!(std::fs::read(&path).unwrap(), b"100 false\n");
+    drop(app);
+    let (ctx, app, _) = setup_defaults();
+    let mut app = app.with_background_opacity_path(path.clone());
+    assert!(has_black_background(&step(&ctx, &mut app, vec![])));
+    set_background_transparency(&ctx, &mut app, 0.5, false);
+    assert_eq!(std::fs::read(&path).unwrap(), b"100 false\n");
+    toggle_background(&ctx, &mut app);
+    assert_eq!(std::fs::read(&path).unwrap(), b"55 true\n");
+    assert_eq!(std::fs::read(&rgb).unwrap(), b"#2080e0\n");
+    // No opacity path opt-in: existing constructor remains isolated.
+    let (ctx, mut ordinary, _) = setup_defaults();
+    toggle_background(&ctx, &mut ordinary);
+    assert_eq!(std::fs::read(&path).unwrap(), b"55 true\n");
+}
+
+#[test]
+fn background_opacity_persistence_save_failure_keeps_live_controls() {
+    let scratch = ColorScratch::new();
+    let blocker = scratch.0.join("not-a-directory");
+    std::fs::write(&blocker, b"keep").unwrap();
+    let (ctx, app, _) = setup_defaults();
+    let mut app = app.with_background_opacity_path(blocker.join("background-opacity.txt"));
+    set_background_transparency(&ctx, &mut app, 0.5, true);
+    assert_eq!(
+        compact_backgrounds(&step(&ctx, &mut app, vec![]))[0].fill,
+        egui::Color32::from_black_alpha(128)
+    );
+    toggle_background(&ctx, &mut app);
+    assert!(has_black_background(&step(&ctx, &mut app, vec![])));
+    toggle_background(&ctx, &mut app);
+    assert_eq!(
+        compact_backgrounds(&step(&ctx, &mut app, vec![]))[0].fill,
+        egui::Color32::from_black_alpha(140)
+    );
+    assert_eq!(std::fs::read(&blocker).unwrap(), b"keep");
+}
+
+#[test]
 fn startup_options_match_preferred_defaults() {
     let (ctx, mut app, address) = setup_defaults();
     let output = step(&ctx, &mut app, vec![]);

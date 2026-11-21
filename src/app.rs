@@ -262,7 +262,14 @@ pub struct EmoteApp {
     /// decorations — never from a pre-chosen square that loses a level.
     size_step: u8,
     applied_size: Vec2,
+    shared_appearance: bool,
+    appearance_worker: Option<crate::appearance_worker::Worker>,
+    appearance_revision: u64,
+    appearance_ready: bool,
+    appearance_pending: bool,
+    appearance_error: Option<String>,
     background_opacity: u8,
+    background_opacity_path: Option<std::path::PathBuf>,
     background_color: [u8; 3],
     background_color_path: Option<std::path::PathBuf>,
     background_color_expanded: bool,
@@ -289,7 +296,14 @@ impl EmoteApp {
             focus_pressed: None,
             size_step: 2,
             applied_size: Vec2::splat(192.0),
+            shared_appearance: false,
+            appearance_worker: None,
+            appearance_revision: 0,
+            appearance_ready: false,
+            appearance_pending: false,
+            appearance_error: None,
             background_opacity: 55,
+            background_opacity_path: None,
             background_color: [0; 3],
             background_color_path: None,
             background_color_expanded: false,
@@ -305,13 +319,68 @@ impl EmoteApp {
         }
     }
 
+    /// Shared-store integration seam. The worker is installed here, not in render.
+    pub fn with_shared_appearance(
+        mut self,
+        store: crate::appearance::Store,
+        ctx: egui::Context,
+    ) -> Self {
+        self.shared_appearance = true;
+        // Shared mode never uses either legacy path, even if an embedding caller
+        // opted in before switching. No legacy file is migrated or deleted.
+        self.background_color_path = None;
+        self.background_opacity_path = None;
+        match crate::appearance_worker::Worker::start(store, ctx) {
+            Ok(worker) => self.appearance_worker = Some(worker),
+            Err(e) => {
+                self.appearance_error = Some(format!("Appearance error: cannot start worker: {e}"))
+            }
+        }
+        self
+    }
+
+    fn submit_appearance(&mut self, patch: crate::appearance::Patch) {
+        if self.appearance_pending || !self.appearance_ready {
+            return;
+        }
+        self.appearance_pending = self
+            .appearance_worker
+            .as_ref()
+            .is_some_and(|worker| worker.patch(self.appearance_revision, patch));
+        if !self.appearance_pending {
+            self.appearance_error =
+                Some("Appearance error: worker unavailable; settings unchanged.".into());
+        }
+    }
+
     /// Opt in to the dedicated RGB store; ordinary `new` performs no filesystem I/O.
     pub fn with_background_color_path(mut self, path: std::path::PathBuf) -> Self {
-        if path.is_absolute() {
+        if !self.shared_appearance && path.is_absolute() {
             self.background_color = crate::background_color::load(&path);
             self.background_color_path = Some(path);
         }
         self
+    }
+
+    /// Opt in independently to opacity/checkbox persistence; `new` stays I/O-free.
+    pub fn with_background_opacity_path(mut self, path: std::path::PathBuf) -> Self {
+        if !self.shared_appearance && path.is_absolute() {
+            (self.background_opacity, self.transparent_background) =
+                crate::background_opacity::load(&path);
+            self.background_opacity_path = Some(path);
+        }
+        self
+    }
+
+    fn save_background_opacity(&self) {
+        if let Some(path) = &self.background_opacity_path {
+            // Persistence errors never discard the live selection.
+            let _ = crate::background_opacity::save(
+                path,
+                self.background_opacity,
+                self.transparent_background,
+            );
+        }
     }
 
     #[cfg(any(target_os = "windows", test))]
@@ -328,6 +397,30 @@ impl EmoteApp {
     /// Draw at a supplied clock instant for deterministic embedding and pixel checks.
     /// Native `show` continues to read the local wall clock once per draw.
     pub fn show_at(&mut self, ui: &mut egui::Ui, now: chrono::DateTime<chrono::FixedOffset>) {
+        // No filesystem work or store locks on the render thread. Only confirmed
+        // worker snapshots update presentation; local control edits are proposals.
+        if let Some(worker) = &self.appearance_worker {
+            for event in worker.drain() {
+                if event.completion {
+                    self.appearance_pending = false;
+                }
+                if let Some(snapshot) = event.snapshot {
+                    self.appearance_revision = snapshot.revision;
+                    self.background_color = snapshot.rgb;
+                    self.background_opacity = snapshot.opacity;
+                    self.transparent_background = snapshot.transparent;
+                    self.appearance_ready = true;
+                    if event.clear_error {
+                        self.appearance_error = None;
+                    }
+                } else {
+                    self.appearance_ready = false;
+                }
+                if let Some(error) = event.error {
+                    self.appearance_error = Some(error);
+                }
+            }
+        }
         // One atomic ordered snapshot; never hold the registry lock during GPU work.
         // Inactive final avatars intentionally use the same cache entry and pixels.
         let (snapshots, show_clock) = self.latest.display_snapshot();
@@ -634,6 +727,15 @@ impl EmoteApp {
                 ui.visuals().text_color(),
             );
         }
+        if self.shared_appearance && self.appearance_error.is_some() {
+            ui.painter().text(
+                rect.left_top() + egui::vec2(4.0, 4.0),
+                egui::Align2::LEFT_TOP,
+                "Appearance: right-click for details",
+                egui::FontId::proportional(10.0),
+                egui::Color32::LIGHT_RED,
+            );
+        }
         // Clock animation ticks every 500ms (walkers advance, glyphs stay
         // second-stable); avatars without clocks keep event-driven repaints.
         if any_clock {
@@ -700,6 +802,12 @@ impl EmoteApp {
         let menu_id = egui::ViewportId::from_hash_of("emote-options");
         let opening = response.secondary_clicked();
         if opening {
+            if let Some(worker) = &self.appearance_worker {
+                // Panel opens trigger an immediate reload, not the next poll.
+                if !self.appearance_pending {
+                    self.appearance_pending = worker.reload();
+                }
+            }
             self.menu_target = response.interact_pointer_pos().and_then(|pos| {
                 card_hits
                     .iter()
@@ -798,26 +906,61 @@ impl EmoteApp {
                     });
                     content_width = content_width.max(slider_row.inner);
                     ui.separator();
-                    let transparency =
-                        ui.checkbox(&mut self.transparent_background, "Transparent background");
+                    if let Some(error) = &self.appearance_error {
+                        let response = ui.colored_label(egui::Color32::LIGHT_RED, error);
+                        content_width = content_width.max(response.rect.width());
+                    }
+                    if self.shared_appearance && (!self.appearance_ready || self.appearance_pending)
+                    {
+                        let status = ui.label(if self.appearance_pending {
+                            "Confirming appearance…"
+                        } else {
+                            "Shared appearance unavailable"
+                        });
+                        content_width = content_width.max(status.rect.width());
+                    }
+                    let editable = !self.shared_appearance
+                        || (self.appearance_ready && !self.appearance_pending);
+                    let mut transparent = self.transparent_background;
+                    let transparency = ui.add_enabled(
+                        editable,
+                        egui::Checkbox::new(&mut transparent, "Transparent background"),
+                    );
                     content_width = content_width.max(transparency.rect.width());
                     if transparency.changed() {
                         // Default to 45% displayed transparency (opacity 55)
                         // instead of full invisibility.
-                        self.background_opacity =
-                            if self.transparent_background { 55 } else { 100 };
+                        let opacity = if transparent { 55 } else { 100 };
+                        if self.shared_appearance {
+                            self.submit_appearance(crate::appearance::Patch::Transparency {
+                                opacity,
+                                enabled: transparent,
+                            });
+                        } else {
+                            self.transparent_background = transparent;
+                            self.background_opacity = opacity;
+                            self.save_background_opacity();
+                        }
                         self.menu_open = false;
                     }
                     let label = ui.label("Background transparency");
                     content_width = content_width.max(label.rect.width());
                     let mut percentage = 100 - self.background_opacity;
                     let slider = ui.add_enabled(
-                        self.transparent_background,
+                        editable && self.transparent_background,
                         egui::Slider::new(&mut percentage, 0..=100).suffix("%"),
                     );
                     content_width = content_width.max(slider.rect.width());
                     if slider.changed() {
-                        self.background_opacity = 100 - percentage;
+                        if self.shared_appearance {
+                            self.submit_appearance(crate::appearance::Patch::Transparency {
+                                opacity: 100 - percentage,
+                                enabled: self.transparent_background,
+                            });
+                        } else {
+                            self.background_opacity = 100 - percentage;
+                            self.save_background_opacity();
+                        }
                         ctx.request_repaint();
                     }
                     // Keep the native picker inside the content-sized options
@@ -827,7 +970,7 @@ impl EmoteApp {
                         ui.toggle_value(&mut self.background_color_expanded, "Background color");
                     content_width = content_width.max(color_toggle.rect.width());
                     if self.background_color_expanded {
-                        let picker = ui.scope(|ui| {
+                        let picker = ui.add_enabled_ui(editable, |ui| {
                             let [r, g, b] = self.background_color;
                             let mut color = egui::Color32::from_rgb(r, g, b);
                             if egui::color_picker::color_picker_color32(
@@ -837,10 +980,13 @@ impl EmoteApp {
                             ) {
                                 let rgb = [color.r(), color.g(), color.b()];
                                 if rgb != self.background_color {
-                                    self.background_color = rgb;
-                                    if let Some(path) = &self.background_color_path {
-                                        // Persistence errors never discard the live selection.
-                                        let _ = crate::background_color::save(path, rgb);
+                                    if self.shared_appearance {
+                                        self.submit_appearance(crate::appearance::Patch::Rgb(rgb));
+                                    } else {
+                                        self.background_color = rgb;
+                                        if let Some(path) = &self.background_color_path {
+                                            let _ = crate::background_color::save(path, rgb);
+                                        }
                                     }
                                     ctx.request_repaint();
                                 }

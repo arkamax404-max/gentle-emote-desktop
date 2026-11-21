@@ -8,6 +8,243 @@ WGPU transparency has since received local human acceptance after relaunch with
 sender alpha preservation enabled. Windows/Linux were not executed this session;
 remaining manual checks and historical platform evidence are distinguished below.
 
+## Shared appearance source
+
+Native startup now uses only the [shared v1 contract](appearance-contract.md), not
+the legacy independent RGB/opacity stores described in the historical evidence
+below. Those modules/builders and their tests remain opt-in compatibility APIs;
+no user files were imported, removed or accessed during this implementation.
+
+Focused checks (canonicalized OS-temp fixtures, process children only for headless CAS/permissions/CLI;
+no native app or real sender launch):
+
+```sh
+~/.cargo/bin/cargo test --test appearance --test appearance_cli --test appearance_ui
+~/.cargo/bin/cargo test
+~/.cargo/bin/cargo fmt --check
+~/.cargo/bin/cargo clippy --all-targets -- -D warnings
+```
+
+The focused suite currently has **23 tests**: 19 parser/resolver/store checks
+(including two child-process helpers), 1 CLI process check and 3 headless public-UI
+checks. Assertions cover unknown nested integers/duplicate escaped keys, UTF-8,
+byte overflow, container-depth 64/65 boundaries, version/schema validation,
+resolver precedence, no startup writes, first revision, conflict source/counter
+preservation, reserved-field retention, rejected patches, overflow, private source
+modes, symlink denial, stale-lock timeout without stealing, eight-thread CAS and
+four-process CAS. CLI help/invalid arguments assert exit, exact stdout and stderr
+before native setup. UI checks exercise confirmed load, checkbox save, external
+500 ms polling, last-good display on invalid input, and a controlled lock/CAS
+conflict proving no optimistic appearance or silent replay; notices survive
+panel reload.
+
+Observed test-first evidence: the store target initially exited 101 at missing
+`appearance` import (compile RED only, **not** behavioral parser RED). The first
+implementation compile failed on `getrandom::Error` not implementing `Error`;
+converting its message corrected that, then 5 initial store checks passed. The
+safe CLI scaffold exited 2 for help, so the CLI test failed its required exit-0
+assertion (1 failed); the UI scaffold failed `confirmed appearance not displayed`
+(1 failed). Both subsequently passed against the actual integration. No claim
+of independently observed RED for each parser/CAS rule is made.
+
+The focused command above initially exited **0 (8 + 1 + 2 passed)**. The first full-suite
+attempt exited 101 before the old targets: a new UI scratch-directory name based
+only on PID/time collided in parallel (`tests/appearance_ui.rs:26`, OS 17,
+`AlreadyExists`). Adding an atomic per-process sequence to both new scratch
+helpers fixed the fixture; the focused command passed again. The one full-suite
+correction run then exited **101: 135 passed, 5 failed, 1 ignored**. All five are
+the parent-confirmed baseline RGB UI failures listed below; no expectation or
+legacy test was weakened. Under the previous contract, a subsequent boundary
+test failed on escaped unpaired UTF-16 units (1 failed, exit 101); the writer
+then implemented their preservation. That behavior/test is **superseded by the
+explicit L12 contract revision below**, not current Unicode policy.
+That earlier focused command exited **0 (9 + 1 + 2 passed)**. The full
+suite result above predates that final boundary correction; it was not blindly
+rerun for the known RGB failures. Format and all-target Clippy (`-D warnings`) each
+exited **0**. There was no timeout, outbound network access, dependency upgrade,
+release build, packaging, launch or restart in this worker's verification.
+
+### L12 contract-revision writer checks (not independent verification)
+
+The revised Unicode test replaces lone-surrogate preservation with BOM/unpaired
+surrogate rejection, including nested unknown keys/values, unchanged source bytes
+and revision on rejected saves, plus valid-pair acceptance and patch preservation.
+The raw-component test covers CLI/env and `Store::new`, leading/interior/trailing
+`.` and `..`, repeated separators, non-UTF-8 Unix paths, no normalization/fallback,
+and actual CLI exit 2 with empty stdout and exact stderr:
+`Error: agent directory must not contain '.' or '..' components\\n`.
+
+Before implementation,
+`~/.cargo/bin/cargo test --test appearance contract_revision_ -- --nocapture`
+exited **101 (0 passed, 2 failed)**: `CLI must reject raw /./agent` and
+`contract must reject {"version":1,"revision":7,"desktop":{"backgroundRgb":[0,0,0]},"image":{"items":[{"text":"\\ud800"}]}}`.
+BOM was already rejected by syntax; the revision makes its diagnostic explicit.
+
+The new public RGB-picker/slider test is preservation coverage of existing
+integration, so there is no claimed behavior-change RED. Its first run,
+`~/.cargo/bin/cargo test --test appearance_ui shared_ui_rgb_picker_and_slider_submit_only_confirmed_patches -- --exact --nocapture`,
+exited **0 (1 passed, 2 filtered)** without production UI changes. It edits all
+three real picker channels with platform-correct select-all, then clicks the
+slider's checked-at-zero endpoint. Fixture-held locks prove neither proposals
+nor source bytes change before confirmation; confirmed saves increment once,
+preserve unknown fields/unrelated desktop values, and reconstruct without startup writes.
+L17 completes that test's source schema and requires preserved explicit defaults.
+The unrelated baseline RGB tests/helpers remain unchanged.
+
+Historical L12 writer GREEN:
+`~/.cargo/bin/cargo test --test appearance --test appearance_cli --test appearance_ui`
+exited **0 (10 + 1 + 3 passed, no failures)**, including both revised rule tests
+and all three UI tests. `~/.cargo/bin/cargo fmt --check` exited **0** with no
+output; `~/.cargo/bin/cargo clippy --all-targets -- -D warnings` exited **0**
+without warnings. No full-suite or native run was performed in this continuation.
+
+### L17 required-fields, POSIX and cleanup writer checks
+
+Existing JSON must contain all three desktop fields. The new omission fixtures
+reject each missing field through parse/read/patch while preserving exact bytes
+and revision 7. Numeric and Unicode fixtures now otherwise have complete schemas;
+Unicode rejection also asserts the intended BOM/surrogate diagnostic. Defaults
+exist only in the complete, missing-file in-memory snapshot.
+
+Observed RED, before production changes:
+`~/.cargo/bin/cargo test --test appearance l17_ -- --nocapture` exited **101:
+0 passed, 3 failed, 10 filtered**. Failures were accepted missing opacity, followed
+ancestor symlink, and rejected same-user 0644 source. No retrospective RED is
+claimed for the new typed-report API or every cleanup path.
+
+Writer GREEN: `~/.cargo/bin/cargo test --test appearance --test appearance_cli --test appearance_ui`
+exited **0: 16 + 1 + 3 passed**. Public tests now cover ancestor symlinks and
+non-directories, unsafe agentDir/descendant modes with no chmod or source changes,
+allowed 0755 directories/0644 source, typed ready/missing/saved/conflict/invalid/
+revision-exhausted/busy/unsafe-path results, stable status codes, and warning
+metadata retaining its primary saved status/snapshot.
+
+Real permission fixtures run the public store in isolated child processes. A
+child-only umask 0777 denies marker creation and verifies partial-acquisition lock
+cleanup. Umask 0400 permits writes but denies reading the completed token: the
+source and revision remain unchanged, the temp is independently cleaned, the
+unreadable owned lock remains fail-closed, and `io-error` retains its original
+PermissionDenied plus `cleanupError`. The parent manually restores only its own
+fixture modes for inspection/teardown. These EACCES fixtures explicitly do not
+apply when run as root; they are not product flags or injected syscall failures.
+No native process, real preferences, sender, or independent verifier was run.
+Scoped `~/.cargo/bin/rustfmt --edition 2024 --config skip_children=true src/appearance.rs src/appearance_worker.rs tests/appearance.rs tests/appearance_ui.rs`
+exited **0**. Final `~/.cargo/bin/cargo fmt --check` exited **0** with no output;
+`~/.cargo/bin/cargo clippy --all-targets -- -D warnings` exited **0** with no
+warnings. The required post-final-change full suite remains parent-owned and
+was not rerun here; these results are writer-only evidence.
+
+At this L17 checkpoint the 64-level nesting proposal was unconfirmed and unapplied;
+that historical policy and deep-acceptance assertion are superseded by L26 below.
+Parent-directory Unsupported/other fsync outcomes, initial identity-metadata
+failure, adversarial source-identity swaps, and saved-update cleanup-warning
+rendering have **not** been reproduced with real filesystem failures here.
+The warning formatter/API and worker wiring are not such failure evidence.
+
+### L19 peer-corpus writer compatibility check
+
+`tests/fixtures/appearance/peer-corpus-v1.json` is the unchanged sender-supplied
+outer corpus (SHA-256 `1140df52f6118b102912188e0d17f9cdd70e1143d337b8784296870ca7c60441`).
+Generation-time Python stdlib decoded the outer array exactly once, checked the
+fixed twelve names/statuses, and wrote each raw string as UTF-8 without parsing
+or reserializing its inner JSON. `peer-corpus/manifest.rs` fixes the expected
+names/statuses, includes each literal file, and records its input SHA-256. Normal
+Rust tests need neither Python nor a new dependency. The decoded leading-BOM
+fixture starts with actual `EF BB BF` bytes; the Rust test also asserts this.
+
+`~/.cargo/bin/cargo test --test appearance peer_corpus_v1_public_store_contract -- --exact --nocapture`
+exited **0: 1 passed, 16 filtered**, with all twelve case results and input hashes
+printed. No meaningful behavioral RED: the existing implementation matched all
+cases on its first execution, and production code was unchanged.
+
+Each case uses its own canonical OS-temp agent directory and the public Store.
+Both ready inputs save RGB at expected revision 0 to revision 1, retain opacity,
+checkbox and the complete unknown semantic subtree (public Snapshot equality),
+then reject stale CAS 0 with a conflict and byte-identical saved source. All ten
+invalid inputs remain invalid on a valid RGB patch attempt, retain exact source
+bytes/revision, and have no cleanup error or lock/temp/alternate-store artifacts.
+Expected-tree parsing occurs only after Store has read the original raw bytes.
+
+These are **shared-fixture compatibility checks only**, not independent
+verification or real concurrent TS/Rust execution. The exhausted independent
+helper was not invoked or replaced. No full suite, native activation, depth-cap
+implementation, or Windows support change is part of this check.
+The single authorized standard focused run,
+`~/.cargo/bin/cargo test --test appearance --test appearance_cli --test appearance_ui`,
+exited **0: 17 + 1 + 3 passed**. `~/.cargo/bin/cargo fmt --check` exited **0**
+with no output. No full-suite or Clippy repetition was performed.
+
+### L21 unsupported-platform status writer check
+
+`Status::from_error(Unsupported)` now returns `UnsupportedPlatform`, code
+`unsupported-platform`; ordinary PermissionDenied/NotFound/Other errors retain
+`io-error`. The public classifier test first exited **101: 0 passed, 1 failed,
+17 filtered**, observing `io-error` instead of `unsupported-platform`. After the
+three-line production change, the same command,
+`~/.cargo/bin/cargo test --test appearance platform_status_contract -- --nocapture`,
+exited **0: 1 passed, 17 filtered**. `~/.cargo/bin/cargo fmt --check` exited **0**
+with no output. No full suite, broad focused targets, Clippy, or verifier ran.
+
+The existing non-Unix Store gate remains before filesystem access. A new
+`cfg(not(unix))` public Store test checks absent directories stay absent and an
+existing invalid source stays byte-identical, with no lock/temp/alternate files.
+It reuses the portable scratch fixture, but is cfg-excluded on this Unix host:
+its body was **neither compiled nor executed here**. No Windows-native proof or
+Unix-protection parity is claimed. At this checkpoint the depth64 proposal was
+unapplied; L26 below records its later explicit acceptance and implementation.
+
+### L26 accepted depth64 revision — writer checks
+
+Owner acceptance adds `MAX_CONTAINER_DEPTH=64`: root object counts as 1, every
+object/array (including empty containers) adds 1, and depth 65 is rejected before
+entry. The existing parser is iterative, so the minimal guard checks open frames
+before descent rather than introducing recursion or changing parser architecture.
+
+The bounded test covers 18 combinations: depth 64/65 × array/object/mixed chains ×
+root unknown/desktop unknown/reserved image placement. All known fields are complete;
+desktop counts as depth 2 and its RGB array as depth 3. Public Store accepts depth
+64 and preserves the complete semantic tree across RGB then grouped transparency
+patches, with revisions 7→8→9. Depth 65 reads/patches return invalid, preserving exact
+source bytes/revision 7 and leaving no lock/temp or cleanup error. The old
+16,000-level acceptance assertion is retired by this explicit contract revision;
+no huge input, overflow harness, GUI, or peer fixture was used.
+
+Observed RED:
+`~/.cargo/bin/cargo test --test appearance container_depth_contract_accepts_64_rejects_65 -- --exact --nocapture`
+exited **101: 0 passed, 1 failed, 18 filtered**, because depth65 unknown/array was
+accepted. The same command after implementation exited **0: 1 passed, 18 filtered**.
+Final writer validation ran the focused store/CLI/UI command exactly once:
+`~/.cargo/bin/cargo test --test appearance --test appearance_cli --test appearance_ui`
+exited **0: 19 + 1 + 3 passed**. `~/.cargo/bin/cargo fmt --check` exited **0**
+with no output, and `~/.cargo/bin/cargo clippy --all-targets -- -D warnings`
+exited **0** without warnings. No independent verification was attempted. The
+parent owns the final full suite; no native activation or feature-acceptance claim.
+
+The independent verifier helper rejected two scratch directories and exhausted
+its one setup correction: **zero independent tests executed**. No helper retry,
+fallback executor or substitute independent run is authorized or claimed. These
+are writer functional checks only (including the separately named multiprocess
+CAS test). The parent owns the required full-suite run after this final revision;
+the earlier full-suite result is not final-revision evidence.
+
+**Remaining high-risk verification:** independently verify permissions/ownership,
+mkdir-lock interoperability with the sender, source/CAS integrity and dependency
+selection. Historical sequential TS-A → RUST-B shared-file execution succeeded
+before L26 on a shallow valid file; it is not final-parser, concurrent-writer, or
+independent proof. Its peer fixture is now revision 3 and was not touched again.
+No Windows/Linux build/runtime, hostile
+same-user TOCTOU defense, injected file-write/fsync/rename/directory-sync failure,
+crash/partial-marker-write failure, ownership-mismatch fixture, or native compositor
+acceptance is established. Post-create metadata failure in `OwnedFile::create` or
+`Transaction::acquire` can leave an object without a captured cleanup identity;
+this now carries manual-recovery `cleanupError` metadata but remains unreproduced.
+Unknown-identity paths are never blindly deleted. Ordinary temp/lock cleanup now
+collects independent errors, with a transaction Drop backstop; grouped-off patch
+semantics remain unchanged.
+Windows persistence explicitly rejects unsupported ACL semantics rather than
+using Unix guards or a fallback store. These limitations are not a green full
+suite or runtime-delivery claim.
+
 ## Desktop focus-request header contract (T2, S2–S3)
 
 The receiver emits only `X-Emote-Focus-Request-Id` as its optional focus header
@@ -166,20 +403,22 @@ If Cargo is not on PATH on the development host, substitute
 `/Users/santiagoperez/.cargo/bin/cargo` for `cargo`. These instructions do not
 install tools, modify PATH, or change sender configuration.
 
-The current suite contains **120 tests** on Windows: 34 receiver, 56 headless
-window, 10 session lifecycle, 3 background-color store, 9 idle-clock image, and
-8 library unit tests (1 shadow-policy, 1 receiver display, 6 session helpers).
-The macOS-only native startup test is ignored by default and counted separately;
-on other platforms that startup test is excluded by a target guard.
+On macOS the current suite defines **153 tests**: 34 receiver, 64 headless
+window, 10 session lifecycle, 3 legacy background-color store, 1 legacy background-opacity store,
+23 shared appearance parser/store/CLI/UI tests, 9 idle-clock image,
+8 library unit tests (1 shadow-policy, 1 receiver display, 6 session helpers),
+and 1 ignored native startup test. Unix-specific persistence/UI tests are excluded
+on Windows. The native startup test is excluded on other platforms by a target guard.
 A headless suite needs no running GUI, but still compiles native dependencies;
 Linux builds need suitable graphics/toolchain libraries.
 
 | Test file | What its passing tests establish |
 | --- | --- |
 | [`tests/receiver.rs`](../tests/receiver.rs), 34 | Real TCP/HTTP validation, exact status/body assertions, rejection preserving snapshot and notification count, byte/deadline/connection bounds, PNG normalization, publication ordering, snapshots, bind failures, and owned shutdown; includes three response-reader guards |
-| [`tests/window.rs`](../tests/window.rs), 56 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip with the 45%-transparency toggle-on default and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry with whole-physical-pixel scales and snapped edges at every supported `pixels_per_point` (documented fractional fallback below 64×65 physical pixels), no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
+| [`tests/window.rs`](../tests/window.rs), 63 on Windows (64 on macOS) | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip with the 45%-transparency toggle-on default and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry with whole-physical-pixel scales and snapped edges at every supported `pixels_per_point` (documented fractional fallback below 64×65 physical pixels), no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
 | [`tests/sessions.rs`](../tests/sessions.rs), 10 | Deterministic registry lease/expiry, reactivation, isolation, retention, ordering, legacy compatibility, caps, and finite replay horizon |
 | [`tests/background_color.rs`](../tests/background_color.rs), 3 | Strict lowercase `#rrggbb` persistence store with nested save/load round trips, black fallbacks, save errors and absolute-root policy |
+| [`tests/background_opacity.rs`](../tests/background_opacity.rs), 1 | Strict bounded opacity/checkbox storage, no-repair defaults, validation before writes, absolute paths and RGB isolation |
 | [`tests/idle_clock_image.rs`](../tests/idle_clock_image.rs), 9 | Canonical pixel-clock golden comparison and session-header renderer checks |
 | [`src/app.rs`](../src/app.rs), 1 | Checkbox-driven opaque → transparent → opaque shadow policy; no native window or compositor is exercised |
 | [`src/receiver.rs`](../src/receiver.rs), 1 | Clock-silence display rule applied at the render seam |
@@ -245,7 +484,74 @@ cargo test --test window
 cargo test --lib app::tests::native_shadow_policy_follows_background_toggle_round_trip -- --exact
 ```
 
-## Desktop background RGB selector and user-global persistence
+## Legacy desktop background transparency persistence (historical native path)
+
+**Superseded for native startup by the shared source above.** The following
+records the preserved opt-in compatibility implementation and its earlier checks.
+
+The former native entry point opted in to a separate user-global `background-opacity.txt`
+beside the RGB file. Both opacity and **Transparent background** survive restarts
+and project changes; `EmoteApp::new(receiver)` remains filesystem-free. Missing,
+invalid or inaccessible stores default to opacity 55/checked without repair.
+Checking still selects opacity 55; unchecking selects 100 and disables the slider.
+Checked at zero transparency reloads checked, with its slider usable.
+
+`tests/background_opacity.rs` covers strict bounded storage, endpoints, checkbox
+round trips, invalid/no-repair defaults, rejection before writes or directory
+creation, absolute paths, save errors and RGB isolation. The two
+`background_opacity_persistence_*` public-menu tests cover immediate checkbox and
+slider saves, reconstruction of checked-at-zero and disabled states, unchanged
+RGB, ordinary-constructor isolation and live settings after save failure. Tests
+use only OS-temp storage and headless UI; native restart/compositor acceptance
+and cross-platform execution remain separate checks.
+
+Observed locally on macOS: `~/.cargo/bin/cargo test --test background_opacity`
+first exited 101 (missing module), then exited 0 (1 passed).
+`~/.cargo/bin/cargo test --test window background_opacity_persistence` first
+exited 101 (missing module/builder), then exited 0 (2 passed).
+`~/.cargo/bin/cargo test` exited 101: 124 passed, 5 failed, 1 ignored overall.
+The window target passed 59/64; failures were the four `background_color_*`
+tests and `upload_only_on_new_snapshot_and_use_nearest_filter`, all expecting
+RGB(32,128,224) but observing white. A subsequent bounded baseline comparison
+established all five failures also occur on HEAD
+`ba6d7bc442a34615f04c651a8e37311d2c92482b` on this macOS host; they were not
+introduced by opacity persistence. This does not turn the full-suite result green.
+No native app was launched, rebuilt for delivery or restarted by this worker.
+
+The diagnostic extracted `git archive HEAD` into a fresh OS-temp directory and
+used the existing absolute `CARGO_TARGET_DIR` cache. Baseline commands were
+`~/.cargo/bin/cargo test --offline --locked --config build.incremental=false --test window background_color_`
+(exit 101, 0 passed/4 failed) and the same prefix with
+`upload_only_on_new_snapshot_and_use_nearest_filter -- --exact`
+(exit 101, 0 passed/1 failed). Each matched the original failure's assertion and
+actual/expected values: saved `#ffffff` instead of `#2080e0`, premultiplied white
+`#8C_8C_8C_8C` instead of `#12_46_7B_8C`, or opaque white instead of RGB(32,128,224).
+
+The first candidate comparison reused the baseline executable: Cargo did not
+recompile and reported only 62 tests, not the candidate's 64. That pass is not
+candidate evidence. Re-saving `src/lib.rs` byte-identically invalidated the stale
+crate artifact. The single candidate confirmation command was
+`~/.cargo/bin/cargo test --offline --locked --config build.incremental=false --test window -- background_color_ upload_only_on_new_snapshot_and_use_nearest_filter`.
+It visibly recompiled the candidate and exited 101 (0 passed/5 failed, 59 filtered
+out), reproducing the same five assertions and values. Raw stdout differs in
+parallel test order, thread IDs, elapsed times and the one-time backtrace hint;
+stderr differs in source paths and compilation timing. No behavioral difference
+was observed at these assertions. All scratch/log files were printed to the tool
+transcript and removed by each script's cleanup trap.
+
+The upload test separately passes HTTP delivery, nearest-filter and exact source
+RGBA assertions before failing at the shared `assert_background_color` call
+after `set_background_color`; this is the same RGB-selection failure, not a
+separately observed upload mismatch. The helper sends Ctrl+A before numeric RGB
+edits on macOS; a platform select-all mismatch is a possible explanation, not a
+verified root cause. No test expectations, helper or production RGB code were
+changed during this diagnosis.
+
+## Desktop background RGB selector and legacy user-global persistence
+
+**Native dedicated-file persistence below is historical; the API remains opt-in
+for embeddings.** Native now shares `appearance.json` and confirms saves before
+applying them; the old live-on-failure behavior is not the native contract.
 
 **Background color** expands egui's opaque RGB picker inside the existing native
 options window. The menu measures the expanded controls and shrinks when they
@@ -492,8 +798,9 @@ acceptance of this corrected eight-pixel complete contour is still pending.
 
 ### Independent transparency control (current behavior)
 
-**Transparent background** is unchecked by default. **Background transparency**
-is disabled at 0% (opaque) until checked; checking initially selects 45%
+**Transparent background** defaults to checked at 45% unless a valid saved
+opacity/checkbox setting exists. **Background transparency** is disabled at 0%
+(opaque) when unchecked; checking selects 45%
 (opacity 55, alpha 140). Checked-at-zero and partial values keep the checkbox checked.
 Unchecking always resets to opaque 0% and disables the slider, not a remembered
 partial percentage. Only background paint fades. Actual opacity controls frames
@@ -965,7 +1272,7 @@ for the remaining detailed checks, not as evidence that every item was exercised
   fallback at opaque, partial and zero opacity; separators stay clear. Opaque
   black source pixels remain black, and source alpha/clock artwork stay unchanged.
   Restart (also from a different project directory) and confirm the selected RGB
-  returns with the existing 45% transparency, x2, No frame and Vertical defaults.
+  returns with the saved transparency/checkbox and x2, No frame and Vertical defaults.
   Do not change sender or HTML/serial LED configuration for this check.
 - [ ] On Windows, inspect the transparent window against a contrasting desktop:
   confirm the native rounded shadow/thin perimeter is absent, then toggle back
@@ -974,8 +1281,10 @@ for the remaining detailed checks, not as evidence that every item was exercised
 - [ ] Toggle back to black, then enable transparency again without sending a new
   frame. Check there is no stale opaque surface, image loss, or unintended
   move/resize/close. Check menu readability and primary drag in both modes; the
-  transparent surface must not become click-through. Restart and confirm the
-  option resets to checked at 45% transparency.
+  transparent surface must not become click-through. Set a nondefault percentage,
+  restart (also from a different project directory), and confirm it returns.
+  Repeat with checked at 0% (slider stays enabled) and with unchecked (opaque,
+  slider disabled). Checking again must select 45%; RGB must remain unchanged.
 - [ ] Repeat applicable build/run and human window checks on Windows and Linux;
   record OS, graphics backend, and display scale. On Wayland, record compositor
   support/policy for topmost placement, native moves, and desktop alpha rather
