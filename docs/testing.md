@@ -5,7 +5,8 @@ session. Socket tests, framebuffer capture, human window inspection, and a real
 external sender each establish different things. The real sender transport check
 below passed; it did not capture each real frame's framebuffer. Production macOS
 WGPU transparency has since received local human acceptance after relaunch with
-sender alpha preservation enabled. Windows/Linux were not executed this session;
+sender alpha preservation enabled. The controlled integration below passed Linux
+headless/build checks; Windows/macOS were not rerun for this candidate;
 remaining manual checks and historical platform evidence are distinguished below.
 
 ## Desktop focus-request header contract (T2, S2–S3)
@@ -166,9 +167,10 @@ If Cargo is not on PATH on the development host, substitute
 `/Users/santiagoperez/.cargo/bin/cargo` for `cargo`. These instructions do not
 install tools, modify PATH, or change sender configuration.
 
-The current suite contains **120 tests** on Windows: 34 receiver, 56 headless
+The current Linux run passed **134 tests**: 34 receiver, 66 headless
 window, 10 session lifecycle, 3 background-color store, 9 idle-clock image, and
-8 library unit tests (1 shadow-policy, 1 receiver display, 6 session helpers).
+12 library unit tests (5 app policies, 1 receiver display, 6 session helpers).
+Windows/macOS were not run for this candidate; no guarded target counts are inferred.
 The macOS-only native startup test is ignored by default and counted separately;
 on other platforms that startup test is excluded by a target guard.
 A headless suite needs no running GUI, but still compiles native dependencies;
@@ -177,11 +179,11 @@ Linux builds need suitable graphics/toolchain libraries.
 | Test file | What its passing tests establish |
 | --- | --- |
 | [`tests/receiver.rs`](../tests/receiver.rs), 34 | Real TCP/HTTP validation, exact status/body assertions, rejection preserving snapshot and notification count, byte/deadline/connection bounds, PNG normalization, publication ordering, snapshots, bind failures, and owned shutdown; includes three response-reader guards |
-| [`tests/window.rs`](../tests/window.rs), 56 | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip with the 45%-transparency toggle-on default and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry with whole-physical-pixel scales and snapped edges at every supported `pixels_per_point` (documented fractional fallback below 64×65 physical pixels), no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
+| [`tests/window.rs`](../tests/window.rs), 66 on Linux | Headless egui options, waiting/menu text, viewport commands, opaque-default/background-toggle round trip with the 45%-transparency toggle-on default and transparent renderer clear, original opaque black/partial-alpha/transparent texture pixels and nearest filtering, full-image padding geometry with whole-physical-pixel scales and snapped edges at every supported `pixels_per_point` (documented fractional fallback below 64×65 physical pixels), no redundant uploads (including after a background toggle), burst coalescing, and app-owned receiver shutdown |
 | [`tests/sessions.rs`](../tests/sessions.rs), 10 | Deterministic registry lease/expiry, reactivation, isolation, retention, ordering, legacy compatibility, caps, and finite replay horizon |
 | [`tests/background_color.rs`](../tests/background_color.rs), 3 | Strict lowercase `#rrggbb` persistence store with nested save/load round trips, black fallbacks, save errors and absolute-root policy |
 | [`tests/idle_clock_image.rs`](../tests/idle_clock_image.rs), 9 | Canonical pixel-clock golden comparison and session-header renderer checks |
-| [`src/app.rs`](../src/app.rs), 1 | Checkbox-driven opaque → transparent → opaque shadow policy; no native window or compositor is exercised |
+| [`src/app.rs`](../src/app.rs), 5 | Checkbox-driven shadow policy and explicit Linux/Windows/macOS menu-focus, button, resize and square-card eligibility/bounds checks; no native window or compositor is exercised |
 | [`src/receiver.rs`](../src/receiver.rs), 1 | Clock-silence display rule applied at the render seam |
 | [`src/sessions.rs`](../src/sessions.rs), 6 | Clock-title silence, focus lifetime and session-registry helpers |
 | [`tests/startup.rs`](../tests/startup.rs), 1 ignored on macOS | An explicitly launched production process reports an occupied fixed port and terminates as expected on that host |
@@ -372,10 +374,16 @@ eight logical pixels of outer padding. Tests drive egui's actual synchronous vie
 same Context, not copied application state. They check complete control-label
 bounds at root sizes 126 and 128, a distinct child ID with ROOT parent, no root
 resize just for opening, per-avatar sizing, unchanged-size suppression, and
-Exit explicitly targeting ROOT. Escape, native child close and focus gain/loss
-dismiss only the popup; initial lack of focus does not self-dismiss it. Reopening
-uses the same viewport. Existing dragging, textures, background and image-fit
-regressions remain covered. Before the PNG replacement below, bevels became
+Exit explicitly targeting ROOT. Escape and native child close dismiss only options.
+**Close options** and focus-loss stability are Linux-only. Windows/macOS retain
+upstream focus-gain → focus-loss dismissal, with no added button or menu-height
+row. Initial lack of focus and unknown focus do not dismiss options. Existing action-triggered
+closures are unchanged; sliders and the color picker stay open. Reopening
+uses the same viewport. On Linux only, repeating a root right-click closes open
+options on release; the next invocation reopens the same child, while Windows/macOS
+keep opening/retargeting options. Wayland placement remains compositor-controlled, not
+anchored beside the click; headless checks do not establish native usability.
+Existing dragging, textures, background and image-fit regressions remain covered. Before the PNG replacement below, bevels became
 opaque-only; transparent geometry stayed unchanged, and returning to opaque
 restored all eight edges for two tiles. The frame update now replaces those
 edge assertions with artwork/clear-opening checks.
@@ -922,6 +930,143 @@ whole-physical-pixel policy (`assert_whole_physical_pixels`). Command values
 themselves are exact f32 and unaffected by viewport rounding. Rendering, fit
 helpers, receiving, and clock behavior are unchanged.
 
+## Fixed root canvas constraints
+
+On Linux only, the non-resizable root requests fixed minimum/maximum bounds and inner size
+as one ordered content-size transaction. It first relaxes the old requested
+bounds to the component-wise envelope of old and new sizes, then fixes both
+bounds to the new size and requests that inner size. This avoids contradictory
+intermediate hints when width shrinks while height grows (or vice versa).
+The cache records requests, not compositor acknowledgements: actual 192×192
+input after a 136×281 request does not cause retry/repaint loops. Options sizing
+and native StartDrag handling are unchanged.
+
+`root_fixed_size_transaction_survives_unacknowledged_square_and_restores_modes`
+uses public HTTP publication and headless egui input. It checks the default pair's
+exact ordered transaction from a still-square root, repeated refusal, accepted
+128-point images, card insets/separator, fractional DPI, count changes with an
+independent child open, opposite-axis changes, single-card restoration and the
+192×192 waiting surface. Existing slider/frame/orientation tests now require the
+Linux transaction, or the single upstream InnerSize on Windows/macOS; image and drag/focus assertions
+remain intact. These checks establish command dispatch and layout, not OS sizing.
+
+The prior Linux Wayland/Hyprland candidate received human acceptance:
+«para mi ya seria una version valida para linux». That is not X11 acceptance
+or approval of this exact compact-background candidate. The earlier controlled build's
+native 136×281 pair was measured separately. Its later 112×281 width-only target
+is historical, superseded by the square-card policy below. Native retesting of
+square sizing remains pending. Also check orientation/frame restoration, drag
+and options.
+No app launch or GUI automation is part of the headless check.
+
+## Controlled cross-platform integration
+
+Production selects the Linux policy with `cfg!(target_os = "linux")`, not runtime
+environment detection. The Linux gate includes X11 and Wayland, but native
+acceptance is only for the prior Wayland/Hyprland candidate. Windows/macOS regain
+the upstream focus latch, no **Close options** row, and one deduplicated ROOT
+InnerSize request without min/max changes. Renderer, native shadow, primary
+StartDrag, sender-focus, image and TMP-close logic are unchanged.
+
+Test-first extraction preserved the pre-change universal Linux behavior before
+`cargo test --offline --locked --lib platform_ -- --nocapture` failed all three
+new policy checks (exit 101): missing non-Linux focus dismissal, unwanted button,
+and five resize commands instead of one. After gating, the same command passed
+3/3 (exit 0). Explicit literal expectations cover Linux, Windows and macOS on the
+Linux host; public egui tests separately select literal platform expectations.
+`cargo test --offline --locked --test window` passed 63/63 and
+`cargo test --offline --locked` passed 130/130 (exit 0). `cargo fmt`,
+`cargo clippy --all-targets -- -D warnings` and `cargo build --offline --locked`
+also exited 0. These are not native
+Windows/macOS execution or independent baseline differential evidence. No CLI
+changed, so a CLI differential is inapplicable. Independent platform verification
+and native retesting remain pending. The running accepted app was not relaunched
+or automated. Historical macOS 54-pass/5-fail and release evidence above remains
+separate and is not converted into a green suite result.
+
+## Linux lateral background and repeated options invocation (width-only milestone)
+
+The following width/height measurements and Y-anchor guarantees are historical;
+the square-card successor below supersedes only that geometry policy.
+Only Linux vertical unframed image/clock cards could narrow their background. The
+policy measures the original composition before compacting; it never feeds a
+new smaller fit back into its baseline. Two physical pixels of horizontal slack
+protect inward pixel snapping. Every candidate must preserve the full quad's
+physical dimensions and vertical bounds and keep it clear of rounded corners;
+otherwise the original width is retained. Integer physical texel scales,
+horizontal rows, frames, waiting surfaces and non-Linux policies are unchanged.
+At effective 125% scale, x2 single/pair/triple requests are 104×130, 112×281 and
+112×424 logical points. These are derived targets, not hard-coded widths.
+
+`linux_side_compaction_keeps_full_images_and_vertical_geometry` first failed
+(exit 101) because the original single-card request was 128×130, not 104×130.
+The final focused run passes both side-compaction tests (exit 0). The matrix
+covers steps 1–5, scales 1/1.25/1.5/2/1.61, aligned/off-grid origins and 1–3 cards,
+including session and final-close fallback clocks. It checks exact physical
+image extents/Y anchors, complete UV corners, unchanged backgrounds' heights,
+five-point gaps and request/texture deduplication. Floating-point subtraction
+and polygon clipping can differ by tiny fractions of a physical pixel: snapped
+cases must still lie on the existing strict pixel grid and match integer physical
+bounds exactly. Existing fractional fallback is classified from the original
+inward-snapped available rectangle, not from the resulting image width; those
+cases retain the original canvas and exact image geometry.
+
+A repeated root right-click now closes options on Linux; a third invocation
+reopens the same child. Its public-input regression observed RED (no child Close)
+and GREEN, including press/release timing and no ROOT Close/drag/focus command.
+Action fixtures explicitly dismiss stale options before opening a fresh target;
+they do not hide toggle behavior. Windows/macOS retain original invocation policy.
+The combined Linux suite passed 133/133, `cargo fmt --check`, all-target Clippy
+with `-D warnings`, offline locked build and `git diff --check` (all exit 0).
+Native candidate acceptance and Windows/macOS target execution remain separate.
+
+## Linux square-card successor
+
+Linux active vertical unframed cards now prioritize square contours, allowing a
+minimal width increase and recentering the image within the resized card. The
+original pre-square 64×65 layout remains the only image-scale reference. The
+policy searches physical-pixel side increments from the complete composition's
+lower bound until every card preserves that baseline scale and its full image
+quad fits the existing eight-segment-per-quarter rounded polygon. It validates
+requested and native floor/nearest/ceil-rounded root sizes, including their
+subsequent egui UI-grid rounding. Packed cards retain four-point insets and
+five-point clear gaps. Integer display scales also use square cards on Linux.
+Global and session clocks use the same fixed baseline scale, with complete date,
+header, time and path artwork. Rejected/transient undersized surfaces keep the
+old contain fallback, and request deduplication prevents refusal retry loops.
+
+The two `linux_square_*` public HTTP/headless-egui tests replace obsolete
+width-only/Y-preservation expectations. RED exited 101 (0 passed, 2 failed): the
+single request was still 104×130 rather than square; the matrix also initially
+closed its session inside the native-rounding loop and thus changed texture
+identity. That fixture now closes only after all rounding variants. GREEN passed
+both tests. A strengthened composition oracle initially reconstructed padding
+by subtracting logical f32 values; exact integer physical comparisons corrected
+that oracle without changing source geometry or weakening image/grid guards.
+The matrix covers steps 1–5, PPP 1/1.25/1.5/2/1.61, origins (0,0) and
+(0.21875,0.34375), counts 1–3, avatars/session clocks/global fallback, and all
+four root-size variants. It compares against the original inward-fit physical
+extent, classifies fractional fallback from the original available rectangle,
+checks full UV corners (1e-6 existing float tolerance), exact snapped physical
+extents/grid, rounded-polygon containment, centered top-padding composition,
+square contours within one physical pixel, gaps, ordering and request/texture
+reuse. A policy unit test checks non-Linux exclusion, invalid inputs and the
+1/64-card boundary. Other existing image/clock/menu/drag/focus assertions remain.
+
+Observed aligned x2 requests at effective PPP 1.25 are **108×108** (single),
+**112.8125×230.625** (pair), and **113.625×350.875** (triple), each retaining
+**128×128 physical image pixels**. At PPP 1, the pair is **138×281**, while a
+single card is **134×134**. These are computed headless results, not hard-coded
+production sizes or native Wayland/X11 acceptance. The old width-only single
+104×130 and pair 112×281 are not current promises. Horizontal/framed/waiting and
+Windows/macOS geometry remain unchanged; native target runs are unavailable.
+The historical macOS 54-pass/5-fail result and release evidence remain separate.
+
+Final checks: `cargo test --offline --locked --test window` passed 66/66;
+`cargo test --offline --locked` passed 134/134. Formatting, all-target Clippy with
+warnings denied and offline locked build passed. No GUI/app operations, sender
+configuration, dependencies, commits or release actions were performed.
+
 ## Manual verification — remaining scope
 
 Local macOS production WGPU transparency with sender alpha preservation is
@@ -953,6 +1098,15 @@ for the remaining detailed checks, not as evidence that every item was exercised
 - [ ] With another ordinary window overlapping, visually check always-on-top
   behavior. Check primary drag, right-click avatar-size slider steps (x1–x5), and
   Exit. Confirm menu selection does not start a drag and exit releases port 8001.
+- [ ] At a 128-pixel avatar size, open options and move the pointer into/out of the
+  options window. On Linux, focus another window: options must stay visible;
+  **Close options** is Linux-only. On Windows/macOS, gaining then losing focus
+  must dismiss options without an extra button or height row. Confirm
+  Escape and native close dismiss only options and allow
+  reopening; existing checkbox/card/stacking actions still close options, while
+  sliders and the color picker stay open. On Wayland record compositor-selected
+  placement without requiring the window to appear beside the click. This is a
+  pending native check, not established by headless input/viewport assertions.
 - [ ] On a contrasting desktop background, confirm the initial window surface is
   black at 45% transparency. With **Transparent background** checked, check that unused space
   and the added one-source-row top padding reveal the desktop, fully transparent
@@ -984,7 +1138,8 @@ for the remaining detailed checks, not as evidence that every item was exercised
 
 Eframe/egui 0.37.0 uses WGPU on macOS and Glow on Windows/Linux; X11 and
 Wayland source backends are enabled. macOS is locally tested and compatible;
-Windows and Linux remain source/build targets with no execution this session.
+Windows was not rerun for this candidate. Linux headless/build evidence is current;
+prior native acceptance is limited to Wayland/Hyprland, not X11 or this exact candidate.
 Historical Windows headless, build and native-smoke results are recorded above.
 A framebuffer pixel proves
 part of the native rendering pipeline, not topmost placement, successful OS

@@ -969,10 +969,10 @@ fn stacking_selector_switches_axes_and_preserves_frames_and_transparent_gaps() {
     let framed_tile = Vec2::new(1100.0 * frame_scale, 1092.0 * frame_scale);
     assert_eq!(
         selection.viewport_output[&egui::ViewportId::ROOT].commands,
-        vec![ViewportCommand::InnerSize(Vec2::new(
-            framed_tile.x,
-            2.0 * framed_tile.y
-        ))]
+        fixed_resize(
+            Vec2::new(2.0 * framed_tile.x, framed_tile.y),
+            Vec2::new(framed_tile.x, 2.0 * framed_tile.y),
+        )
     );
     drop(selection);
     let render = |app: &mut EmoteApp, count: usize, size: f32| {
@@ -1054,10 +1054,10 @@ fn stacking_selector_switches_axes_and_preserves_frames_and_transparent_gaps() {
     let selection = select_menu_option(&ctx, &mut app, "Horizontal");
     assert_eq!(
         selection.viewport_output[&egui::ViewportId::ROOT].commands,
-        vec![ViewportCommand::InnerSize(Vec2::new(
-            2.0 * framed_tile.x,
-            framed_tile.y
-        ))]
+        fixed_resize(
+            Vec2::new(framed_tile.x, 2.0 * framed_tile.y),
+            Vec2::new(2.0 * framed_tile.x, framed_tile.y),
+        )
     );
     drop(selection);
     session_request(address, "b", 2, "emote/close", 0);
@@ -1373,10 +1373,16 @@ fn size_slider_steps_render_the_chosen_image_and_derive_the_canvas_from_it() {
         let composition = Vec2::new(side, 65.0 * step_scale);
         let frame_scale = (composition.y + 3.0) / 851.0;
         let framed_tile = Vec2::new(1100.0 * frame_scale, 1092.0 * frame_scale);
+        let previous_step = if step_index == 1 {
+            3.0
+        } else {
+            step_scale - 1.0
+        };
+        let previous_tile = Vec2::new(1100.0, 1092.0) * ((65.0 * previous_step + 3.0) / 851.0);
         let commands = set_size_step(&ctx, &mut app, step_index);
         assert_eq!(
             commands,
-            vec![ViewportCommand::InnerSize(framed_tile)],
+            fixed_resize(previous_tile, framed_tile),
             "the framed canvas adds only the frame margins around the whole \
              x{step_index} composition"
         );
@@ -1411,7 +1417,7 @@ fn size_slider_steps_render_the_chosen_image_and_derive_the_canvas_from_it() {
         let toggled = toggle_no_frame_collecting_commands(&ctx, &mut app);
         assert_eq!(
             toggled,
-            vec![ViewportCommand::InnerSize(composition)],
+            fixed_resize(framed_tile, composition),
             "disabling the frame reclaims its margins down to the whole composition"
         );
         let unframed = surface_step(&ctx, &mut app, composition);
@@ -1455,10 +1461,10 @@ fn size_slider_canvas_covers_multiple_avatars_orientations_and_scale_factors() {
     let commands = set_size_step(&ctx, &mut app, 4);
     assert_eq!(
         commands,
-        vec![ViewportCommand::InnerSize(Vec2::new(
-            2.0 * framed_tile.x,
-            framed_tile.y
-        ))],
+        fixed_resize(
+            Vec2::new(2200.0, 1092.0) * ((65.0 * 3.0 + 3.0) / 851.0),
+            Vec2::new(2.0 * framed_tile.x, framed_tile.y),
+        ),
         "framed multi-avatar rows stack whole framed tiles"
     );
     let horizontal = surface_step(
@@ -1483,10 +1489,10 @@ fn size_slider_canvas_covers_multiple_avatars_orientations_and_scale_factors() {
     let selection = select_menu_option(&ctx, &mut app, "Vertical");
     assert_eq!(
         selection.viewport_output[&egui::ViewportId::ROOT].commands,
-        vec![ViewportCommand::InnerSize(Vec2::new(
-            framed_tile.x,
-            2.0 * framed_tile.y
-        ))],
+        fixed_resize(
+            Vec2::new(2.0 * framed_tile.x, framed_tile.y),
+            Vec2::new(framed_tile.x, 2.0 * framed_tile.y),
+        ),
         "vertical stacking stacks the same framed tiles"
     );
     let vertical = surface_step(
@@ -1508,10 +1514,17 @@ fn size_slider_canvas_covers_multiple_avatars_orientations_and_scale_factors() {
     let toggled = toggle_no_frame_collecting_commands(&ctx, &mut app);
     assert_eq!(
         toggled,
-        vec![ViewportCommand::InnerSize(Vec2::new(
-            card.x,
-            2.0 * card.y + 5.0
-        ))],
+        fixed_resize(
+            Vec2::new(framed_tile.x, 2.0 * framed_tile.y),
+            Vec2::new(
+                if cfg!(target_os = "linux") {
+                    card.y
+                } else {
+                    card.x
+                },
+                2.0 * card.y + 5.0
+            ),
+        ),
         "the unframed vertical canvas budgets insets and gaps around the composition"
     );
     let unframed_vertical = surface_step(&ctx, &mut app, Vec2::new(card.x, 2.0 * card.y + 5.0));
@@ -1526,10 +1539,17 @@ fn size_slider_canvas_covers_multiple_avatars_orientations_and_scale_factors() {
     let selection = select_menu_option(&ctx, &mut app, "Horizontal");
     assert_eq!(
         selection.viewport_output[&egui::ViewportId::ROOT].commands,
-        vec![ViewportCommand::InnerSize(Vec2::new(
-            2.0 * card.x + 5.0,
-            card.y
-        ))],
+        fixed_resize(
+            Vec2::new(
+                if cfg!(target_os = "linux") {
+                    card.y
+                } else {
+                    card.x
+                },
+                2.0 * card.y + 5.0
+            ),
+            Vec2::new(2.0 * card.x + 5.0, card.y),
+        ),
         "the unframed horizontal canvas budgets insets and gaps around the composition"
     );
     let unframed_horizontal = surface_step(&ctx, &mut app, Vec2::new(2.0 * card.x + 5.0, card.y));
@@ -1622,6 +1642,10 @@ fn small_surface_menu_has_independent_viewport_and_complete_controls() {
         );
         assert!(!format!("{:?}", root.shapes).contains("Transparent background"));
         let child = menu::take();
+        assert_eq!(
+            painted_label(&child, "Close options").is_some(),
+            cfg!(target_os = "linux")
+        );
         let mut text_bounds = egui::Rect::NOTHING;
         for label in [
             "Avatar size",
@@ -1633,8 +1657,12 @@ fn small_surface_menu_has_independent_viewport_and_complete_controls() {
             "Vertical / Horizontal",
             "Horizontal",
             "Vertical",
+            "Close options",
             "Exit",
-        ] {
+        ]
+        .into_iter()
+        .filter(|label| *label != "Close options" || cfg!(target_os = "linux"))
+        {
             let text = child
                 .shapes
                 .iter()
@@ -1660,7 +1688,7 @@ fn small_surface_menu_has_independent_viewport_and_complete_controls() {
 
 #[test]
 fn independent_menu_dismisses_and_reopens_without_closing_the_avatar() {
-    for dismissal in 0..3 {
+    for dismissal in 0..if cfg!(target_os = "linux") { 3 } else { 2 } {
         let (ctx, mut app, _) = setup();
         let open = |app: &mut EmoteApp| {
             step(&ctx, app, vec![]);
@@ -1720,10 +1748,15 @@ fn independent_menu_dismisses_and_reopens_without_closing_the_avatar() {
                 menu::raw(raw);
             }
             _ => {
-                focus(true);
                 step(&ctx, &mut app, vec![]);
-                menu::take();
-                focus(false);
+                let p = painted_label(&menu::take(), "Close options")
+                    .expect("explicit options close button must be painted");
+                menu::events(vec![
+                    Event::PointerMoved(p),
+                    button(p, PointerButton::Primary, true),
+                ]);
+                step(&ctx, &mut app, vec![]);
+                menu::events(vec![button(p, PointerButton::Primary, false)]);
             }
         }
         let closing = step(&ctx, &mut app, vec![]);
@@ -1751,6 +1784,176 @@ fn independent_menu_dismisses_and_reopens_without_closing_the_avatar() {
             "reopen the same popup, not another window"
         );
         assert!(format!("{:?}", menu::take().shapes).contains("Transparent background"));
+    }
+}
+
+#[test]
+fn independent_menu_root_invocation_toggles_only_on_linux_release() {
+    let (ctx, mut app, address) = setup_defaults();
+    session_request_state(address, "a", 1, "emote", 42, Some("clock"));
+    session_request_named(address, "b", 1, "emote", 84, None, Some("TMP"));
+    step(&ctx, &mut app, vec![]);
+    let id = egui::ViewportId::from_hash_of("emote-options");
+    for (index, p) in [
+        Pos2::new(20.0, 20.0),
+        Pos2::new(20.0, 150.0),
+        Pos2::new(20.0, 150.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let pressed = step(
+            &ctx,
+            &mut app,
+            vec![
+                Event::PointerMoved(p),
+                button(p, PointerButton::Secondary, true),
+            ],
+        );
+        assert!(
+            pressed.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .is_empty()
+        );
+        assert_eq!(
+            menu::take_optional().is_some(),
+            index > 0 && (index == 1 || !cfg!(target_os = "linux"))
+        );
+        let released = step(
+            &ctx,
+            &mut app,
+            vec![button(p, PointerButton::Secondary, false)],
+        );
+        assert!(
+            released.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .is_empty()
+        );
+        let closing = cfg!(target_os = "linux") && index == 1;
+        let commands = &released.viewport_output[&id].commands;
+        assert_eq!(commands.contains(&ViewportCommand::Close), closing);
+        assert_eq!(commands.contains(&ViewportCommand::Focus), !closing);
+        if closing {
+            assert_eq!(commands, &[ViewportCommand::Close]);
+            assert!(
+                menu::take().shapes.is_empty(),
+                "do not render/retarget controls on toggle-close"
+            );
+        } else {
+            step(&ctx, &mut app, vec![]);
+            let child = menu::take();
+            assert_eq!(painted_label(&child, "Close clock").is_some(), index == 0);
+            assert_eq!(painted_label(&child, "Close").is_some(), index != 0);
+            // Child-owned secondary events are not another root invocation.
+            menu::events(vec![
+                Event::PointerMoved(p),
+                button(p, PointerButton::Secondary, true),
+                button(p, PointerButton::Secondary, false),
+            ]);
+            let root = step(&ctx, &mut app, vec![]);
+            assert!(
+                !root.viewport_output[&id]
+                    .commands
+                    .contains(&ViewportCommand::Close)
+            );
+            menu::take();
+            let mut raw = egui::RawInput::default();
+            raw.viewports.insert(
+                id,
+                egui::ViewportInfo {
+                    focused: Some(false),
+                    ..Default::default()
+                },
+            );
+            menu::raw(raw);
+            let root = step(&ctx, &mut app, vec![]);
+            assert!(
+                !root.viewport_output[&id]
+                    .commands
+                    .contains(&ViewportCommand::Close)
+            );
+            menu::take();
+        }
+        assert!(focus_poll(address, "a", index as u64 + 2).is_none());
+        assert!(focus_poll(address, "b", index as u64 + 2).is_none());
+    }
+}
+
+#[test]
+fn independent_menu_obeys_platform_focus_lifecycle_and_pointer_entry() {
+    for pointer_entry in [true, false] {
+        let (ctx, mut app, _) = setup_defaults();
+        card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+        menu::take();
+        let id = egui::ViewportId::from_hash_of("emote-options");
+        let mut focused_once = false;
+        for focused in [false, true, false] {
+            let mut raw = egui::RawInput::default();
+            raw.viewports.insert(
+                id,
+                egui::ViewportInfo {
+                    focused: Some(focused),
+                    ..Default::default()
+                },
+            );
+            if pointer_entry {
+                raw.events = vec![Event::PointerMoved(Pos2::new(12.0, 12.0))];
+            }
+            menu::raw(raw);
+            let root = step(&ctx, &mut app, vec![]);
+            let child = menu::take();
+            let closes = !cfg!(target_os = "linux") && !focused && focused_once;
+            assert_eq!(
+                root.viewport_output[&id]
+                    .commands
+                    .contains(&ViewportCommand::Close),
+                closes
+            );
+            assert_eq!(
+                painted_label(&child, "Transparent background").is_some(),
+                !closes
+            );
+            focused_once |= focused;
+            for output in [&*root, &child] {
+                assert!(
+                    output.viewport_output[&egui::ViewportId::ROOT]
+                        .commands
+                        .is_empty()
+                );
+            }
+        }
+        if !cfg!(target_os = "linux") {
+            step(&ctx, &mut app, vec![]);
+            assert!(menu::take_optional().is_none());
+            card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+            menu::take();
+            let mut raw = egui::RawInput::default();
+            raw.viewports.insert(
+                id,
+                egui::ViewportInfo {
+                    focused: Some(false),
+                    ..Default::default()
+                },
+            );
+            menu::raw(raw);
+            let reopened = step(&ctx, &mut app, vec![]);
+            assert!(
+                !reopened.viewport_output[&id]
+                    .commands
+                    .contains(&ViewportCommand::Close)
+            );
+            assert!(painted_label(&menu::take(), "Avatar size").is_some());
+        }
+        menu::events(vec![Event::PointerGone]);
+        let root = step(&ctx, &mut app, vec![]);
+        assert!(
+            !root.viewport_output[&id]
+                .commands
+                .contains(&ViewportCommand::Close)
+        );
+        assert!(painted_label(&menu::take(), "Avatar size").is_some());
+        step(&ctx, &mut app, vec![]);
+        assert!(painted_label(&menu::take(), "Avatar size").is_some());
     }
 }
 
@@ -1875,7 +2078,7 @@ fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
     // the framed tile was applied before the final close.
     assert_eq!(
         retained.viewport_output[&egui::ViewportId::ROOT].commands,
-        vec![ViewportCommand::InnerSize(Vec2::new(192.0, 195.0))]
+        fixed_resize(framed_tile, Vec2::new(192.0, 195.0))
     );
     drop(retained);
 
@@ -1886,7 +2089,7 @@ fn neighboring_sessions_isolate_uploads_and_release_removed_textures() {
     assert!(replaced.textures_delta.free.contains(&tiles[1].0));
     assert_eq!(
         replaced.viewport_output[&egui::ViewportId::ROOT].commands,
-        vec![ViewportCommand::InnerSize(framed_tile)]
+        fixed_resize(Vec2::new(192.0, 195.0), framed_tile)
     );
 }
 
@@ -2595,19 +2798,22 @@ fn size_slider_applies_to_each_avatar_and_count_changes_keep_chosen_size() {
     let tile = Vec2::new(1100.0 * frame_scale, 1092.0 * frame_scale);
     assert_eq!(
         pressed.viewport_output[&egui::ViewportId::ROOT].commands,
-        vec![ViewportCommand::InnerSize(Vec2::new(2.0 * tile.x, tile.y))]
+        fixed_resize(
+            Vec2::new(2200.0, 1092.0) * ((65.0 * 3.0 + 3.0) / 851.0),
+            Vec2::new(2.0 * tile.x, tile.y),
+        )
     );
     assert!(
         released.viewport_output[&egui::ViewportId::ROOT]
             .commands
             .is_empty(),
-        "resizing is deduplicated once the size is applied"
+        "resizing is deduplicated once the size is requested"
     );
     session_request(address, "a", 2, "emote/close", 0);
     let closed = run(&mut app, vec![]);
     assert_eq!(
         closed.viewport_output[&egui::ViewportId::ROOT].commands,
-        vec![ViewportCommand::InnerSize(tile)]
+        fixed_resize(Vec2::new(2.0 * tile.x, tile.y), tile)
     );
 }
 
@@ -2816,29 +3022,19 @@ fn toggle_option(ctx: &egui::Context, app: &mut EmoteApp, label: &str) {
     let output = select_menu_option(ctx, app, label);
     let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
     assert!(
-        commands
-            .iter()
-            .all(|command| matches!(command, ViewportCommand::InnerSize(_))),
+        commands.iter().all(|command| matches!(
+            command,
+            ViewportCommand::InnerSize(_)
+                | ViewportCommand::MinInnerSize(_)
+                | ViewportCommand::MaxInnerSize(_)
+        )),
         "toggle must not move or close the window, but the deliberate \
          framed/unframed content resize may appear: {commands:?}"
     );
 }
 
 fn select_menu_option(ctx: &egui::Context, app: &mut EmoteApp, label: &str) -> Output {
-    // Restore the helper's normal surface before hit-testing a click: the last
-    // public render may have exercised a narrow transient viewport.
-    step(ctx, app, vec![]);
-    let p = Pos2::new(20.0, 20.0);
-    step(
-        ctx,
-        app,
-        vec![
-            Event::PointerMoved(p),
-            button(p, PointerButton::Secondary, true),
-        ],
-    );
-    step(ctx, app, vec![button(p, PointerButton::Secondary, false)]);
-    step(ctx, app, vec![]);
+    card_menu(ctx, app, Pos2::new(20.0, 20.0));
     let output = menu::take();
     let p = output
         .shapes
@@ -2868,18 +3064,7 @@ fn select_menu_option(ctx: &egui::Context, app: &mut EmoteApp, label: &str) -> O
 /// Choose one of the five avatar-size steps (x1..x5) through the public menu
 /// slider and return every root viewport command emitted while doing so.
 fn set_size_step(ctx: &egui::Context, app: &mut EmoteApp, step_index: u8) -> Vec<ViewportCommand> {
-    step(ctx, app, vec![]);
-    let p = Pos2::new(20.0, 20.0);
-    step(
-        ctx,
-        app,
-        vec![
-            Event::PointerMoved(p),
-            button(p, PointerButton::Secondary, true),
-        ],
-    );
-    step(ctx, app, vec![button(p, PointerButton::Secondary, false)]);
-    step(ctx, app, vec![]);
+    card_menu(ctx, app, Pos2::new(20.0, 20.0));
     let point = menu::slider_position("Avatar size", f32::from(step_index - 1) / 4.0);
     menu::events(vec![
         Event::PointerMoved(point),
@@ -2916,6 +3101,18 @@ fn set_size_step(ctx: &egui::Context, app: &mut EmoteApp, step_index: u8) -> Vec
 // Card actions use the same public surface and native-child event adapter as
 // global options, but retain the exact click position on the default test surface.
 fn card_menu(ctx: &egui::Context, app: &mut EmoteApp, p: Pos2) {
+    // These action fixtures require a fresh target, not a repeated invocation.
+    // Explicitly dismiss any existing child before invoking the root menu.
+    menu::events(vec![Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    }]);
+    step(ctx, app, vec![]);
+    // Do not leave a queued Escape when the child was already closed.
+    menu::events(vec![]);
     step(ctx, app, vec![]);
     step(
         ctx,
@@ -3200,7 +3397,14 @@ fn card_last_clock_waits_for_normal_for_session_and_legacy() {
         let closing = card_action(&ctx, &mut app, "Close clock");
         assert_eq!(
             closing.viewport_output[&egui::ViewportId::ROOT].commands,
-            vec![ViewportCommand::InnerSize(Vec2::splat(192.0))]
+            fixed_resize(
+                if cfg!(target_os = "linux") {
+                    Vec2::splat(134.0)
+                } else {
+                    Vec2::new(128.0, 130.0)
+                },
+                Vec2::splat(192.0)
+            )
         );
         drop(closing);
         assert_waiting(&step(&ctx, &mut app, vec![]));
@@ -3386,17 +3590,7 @@ fn toggle_no_frame_collecting_commands(
     ctx: &egui::Context,
     app: &mut EmoteApp,
 ) -> Vec<ViewportCommand> {
-    step(ctx, app, vec![]);
-    let p = Pos2::new(20.0, 20.0);
-    step(
-        ctx,
-        app,
-        vec![
-            Event::PointerMoved(p),
-            button(p, PointerButton::Secondary, true),
-        ],
-    );
-    step(ctx, app, vec![button(p, PointerButton::Secondary, false)]);
+    card_menu(ctx, app, Pos2::new(20.0, 20.0));
     step(ctx, app, vec![]);
     let output = menu::take();
     let p = output
@@ -3727,6 +3921,544 @@ fn background_color_persistence_save_failure_keeps_live_rgb() {
     assert_eq!(std::fs::read(&blocker).unwrap(), b"keep");
 }
 
+#[cfg(target_os = "linux")]
+fn original_fractional_fit(available: egui::Rect, ppp: f32) -> bool {
+    assert!(ppp.is_finite() && ppp > 0.0 && available.is_positive());
+    let width = ((available.max.x * ppp).floor() - (available.min.x * ppp).ceil()).max(0.0);
+    let height = ((available.max.y * ppp).floor() - (available.min.y * ppp).ceil()).max(0.0);
+    (width / 64.0).min(height / 65.0) < 1.0
+}
+
+#[cfg(target_os = "linux")]
+fn assert_same_physical_image(
+    after: egui::Rect,
+    before: egui::Rect,
+    available: egui::Rect,
+    ppp: f32,
+) {
+    if original_fractional_fit(available, ppp) {
+        // Existing sub-native contain fallback is deliberately not pixel-snapped.
+        // Preserve its physical extent, but allow the square card to recenter it.
+        assert!(
+            (after.size() - before.size()).length() * ppp < 0.001,
+            "preserve fractional physical extent; recentering is allowed"
+        );
+        return;
+    }
+    assert_whole_physical_pixels(before, ppp, "baseline full image");
+    assert_whole_physical_pixels(after, ppp, "square-card full image");
+    let edges = |rect: egui::Rect| {
+        [rect.left(), rect.top(), rect.right(), rect.bottom()]
+            .map(|edge| (edge * ppp).round() as i32)
+    };
+    let [ax, ay, bx, by] = edges(after);
+    let [cx, cy, dx, dy] = edges(before);
+    assert_eq!(
+        (bx - ax, by - ay),
+        (dx - cx, dy - cy),
+        "exact physical extent (square cards may recenter): after={after:?}, before={before:?}, ppp={ppp}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn assert_square_composition(
+    card: egui::Rect,
+    image: egui::Rect,
+    count: usize,
+    ppp: f32,
+    original: egui::Rect,
+) {
+    let available = if count > 1 { card.shrink(4.0) } else { card };
+    let scale = image.width() / 64.0;
+    let composition = egui::Rect::from_min_max(image.min - egui::vec2(0.0, scale), image.max);
+    if original_fractional_fit(original, ppp) {
+        assert!(available.expand(0.00001).contains_rect(composition));
+    } else {
+        // Do not reconstruct a snapped padding edge by subtracting logical
+        // f32 values: compare exact integral physical bounds instead.
+        let row = (scale * ppp).round();
+        assert!((image.left() * ppp).round() >= (available.left() * ppp).ceil());
+        assert!((image.top() * ppp).round() - row >= (available.top() * ppp).ceil());
+        assert!((image.right() * ppp).round() <= (available.right() * ppp).floor());
+        assert!((image.bottom() * ppp).round() <= (available.bottom() * ppp).floor());
+    }
+    // Centering the virtual 64×65 composition may bias toward top/left by
+    // at most one physical pixel, never remove its source padding row.
+    assert!((composition.center().x - available.center().x).abs() * ppp <= 1.001);
+    assert!((composition.center().y - available.center().y).abs() * ppp <= 1.001);
+    assert!((card.width() - card.height()).abs() * ppp <= 1.001);
+    // Independently construct each quarter's chord half-planes. Testing the
+    // quad corners proves containment in the polygon (not just its circle).
+    for center in [
+        card.min + Vec2::splat(8.0),
+        card.max - Vec2::splat(8.0),
+        egui::pos2(card.right() - 8.0, card.top() + 8.0),
+        egui::pos2(card.left() + 8.0, card.bottom() - 8.0),
+    ] {
+        for corner in [
+            image.left_top(),
+            image.right_top(),
+            image.left_bottom(),
+            image.right_bottom(),
+        ] {
+            let offset = corner - center;
+            // Only the outside quadrant belongs to this corner's arc.
+            let outward = center - card.center();
+            if offset.x * outward.x <= 0.0 || offset.y * outward.y <= 0.0 {
+                continue;
+            }
+            for segment in 0..8 {
+                let angle = (segment as f32 + 0.5) * std::f32::consts::FRAC_PI_2 / 8.0;
+                let normal = egui::vec2(angle.cos(), angle.sin());
+                let projection = offset.abs().dot(normal);
+                assert!(
+                    projection * ppp
+                        <= 8.0 * (std::f32::consts::FRAC_PI_2 / 16.0).cos() * ppp + 0.00001,
+                    "complete quad outside rounded polygon: card={card:?} image={image:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_square_cards_keep_full_images_and_vertical_gaps() {
+    for count in [1, 2, 3] {
+        let (ctx, mut app, address) = setup_defaults();
+        ctx.set_pixels_per_point(1.25);
+        step(&ctx, &mut app, vec![]); // absorb the zoom transition
+        for (index, id) in ["a", "b", "c"].into_iter().take(count).enumerate() {
+            session_request_named(
+                address,
+                id,
+                1,
+                "emote",
+                42,
+                (index == 1).then_some("clock"),
+                Some("ABCDEFGHIJKLMNOPQ"),
+            );
+        }
+        let requested = compact_surface(&ctx, &mut app, Vec2::splat(192.0));
+        let size = requested.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                ViewportCommand::InnerSize(size) => Some(*size),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            (size.x - (size.y - (count - 1) as f32 * 5.0) / count as f32).abs() * 1.25 <= 1.0,
+            "square cards required: count={count}, requested={size:?}"
+        );
+        let expected_side = [108.0, 112.8125, 113.625][count - 1];
+        assert_eq!(
+            size,
+            Vec2::new(
+                expected_side,
+                count as f32 * expected_side + (count - 1) as f32 * 5.0
+            )
+        );
+        eprintln!(
+            "square x2 @1.25 count={count}: {:.5}×{:.5}; image 128×128 physical",
+            size.x, size.y
+        );
+        assert_eq!(
+            requested.viewport_output[&egui::ViewportId::ROOT].commands,
+            fixed_resize(Vec2::splat(192.0), size)
+        );
+        let baseline = egui::Rect::from_min_size(
+            Pos2::ZERO,
+            Vec2::new(
+                if count == 1 { 128.0 } else { 136.0 },
+                count as f32 * (130.0 + if count > 1 { 8.0 } else { 0.0 })
+                    + (count - 1) as f32 * 5.0,
+            ),
+        );
+        let cards = if count == 1 {
+            vec![baseline]
+        } else {
+            expected_unframed_cards(baseline, count, true)
+        };
+        let applied = compact_surface(&ctx, &mut app, size);
+        let mut images = avatars(&applied);
+        images.extend(clock_meshes(&applied));
+        images.sort_by(|a, b| a.1.top().total_cmp(&b.1.top()));
+        assert_eq!(images.len(), count);
+        for ((id, image), card) in images.iter().zip(cards) {
+            let available = if count == 1 { card } else { card.shrink(4.0) };
+            let (_, before) = snapped_physical_image_fit(available, 1.25);
+            assert_same_physical_image(*image, before, available, 1.25);
+            assert!((image.width() * 1.25 - 128.0).abs() < 0.001);
+            let mesh = avatar_mesh(&applied, *id);
+            for uv in [
+                Pos2::ZERO,
+                Pos2::new(1.0, 0.0),
+                Pos2::new(0.0, 1.0),
+                Pos2::new(1.0, 1.0),
+            ] {
+                assert!(
+                    mesh.vertices.iter().any(|v| v.uv.distance(uv) < 0.000001),
+                    "complete PNG corner {uv:?}: {:?}",
+                    mesh.vertices
+                );
+            }
+        }
+        let backgrounds = compact_backgrounds(&applied);
+        assert_eq!(backgrounds.len(), count);
+        for bg in &backgrounds {
+            assert_eq!(bg.rect.size(), Vec2::splat(size.x));
+        }
+        for pair in backgrounds.windows(2) {
+            assert_eq!(pair[1].rect.top() - pair[0].rect.bottom(), 5.0);
+        }
+        assert!(
+            applied.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .is_empty()
+        );
+        let stable = compact_surface(&ctx, &mut app, size);
+        assert!(stable.textures_delta.set.is_empty());
+        assert!(
+            stable.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .is_empty()
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_square_matrix_preserves_baseline_pixels_and_fallback_clock() {
+    let render = |ctx: &egui::Context, app: &mut EmoteApp, origin: Pos2, size: Vec2| {
+        let mut raw = input(vec![]);
+        raw.screen_rect = Some(egui::Rect::from_min_size(origin, size));
+        let now = chrono::DateTime::from_timestamp_millis(5000)
+            .unwrap()
+            .fixed_offset();
+        Output::new(ctx, ctx.run_ui(raw, |ui| app.show_at(ui, now)))
+    };
+    let images = |output: &Output| {
+        let mut images = avatars(output);
+        images.extend(clock_meshes(output));
+        images.sort_by(|a, b| a.1.top().total_cmp(&b.1.top()));
+        images
+    };
+    let requested = |output: &Output| {
+        output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .iter()
+            .find_map(|cmd| {
+                if let ViewportCommand::InnerSize(size) = cmd {
+                    Some(*size)
+                } else {
+                    None
+                }
+            })
+    };
+    for step_index in 1..=5 {
+        for ppp in [1.0, 1.25, 1.5, 2.0, 1.61] {
+            for origin in [Pos2::ZERO, Pos2::new(0.21875, 0.34375)] {
+                for count in [1, 2, 3] {
+                    let (ctx, mut app, address) = setup_defaults();
+                    set_size_step(&ctx, &mut app, step_index);
+                    menu::events(vec![Event::Key {
+                        key: egui::Key::Escape,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: Default::default(),
+                    }]);
+                    step(&ctx, &mut app, vec![]);
+                    ctx.set_pixels_per_point(ppp);
+                    step(&ctx, &mut app, vec![]);
+                    for (index, id) in ["a", "b", "c"].into_iter().take(count).enumerate() {
+                        session_request_named(
+                            address,
+                            id,
+                            1,
+                            "emote",
+                            42,
+                            (index == 1 || count == 1 && step_index % 2 == 1).then_some("clock"),
+                            Some("ABCDEFGHIJKLMNOPQ"),
+                        );
+                    }
+                    let inset = if count > 1 { 8.0 } else { 0.0 };
+                    let old = Vec2::new(
+                        64.0 * f32::from(step_index) + inset,
+                        count as f32 * (65.0 * f32::from(step_index) + inset)
+                            + (count - 1) as f32 * 5.0,
+                    );
+                    let before = render(&ctx, &mut app, origin, old);
+                    let desired =
+                        requested(&before).expect("publication requests its content size");
+                    assert!(
+                        (desired.x - (desired.y - (count - 1) as f32 * 5.0) / count as f32).abs()
+                            * ppp
+                            <= 1.0,
+                        "square request: step={step_index} ppp={ppp} count={count} origin={origin:?}: {desired:?}"
+                    );
+                    // A native window has integral physical dimensions, not necessarily
+                    // the exact logical requested size. Exercise both rounding directions.
+                    for rounded in [
+                        desired,
+                        (desired * ppp).floor() / ppp,
+                        (desired * ppp).round() / ppp,
+                        (desired * ppp).ceil() / ppp,
+                    ] {
+                        let after = render(&ctx, &mut app, origin, rounded);
+                        let before_images = images(&before);
+                        let after_images = images(&after);
+                        assert_eq!(before_images.len(), count);
+                        assert_eq!(after_images.len(), count);
+                        let original_root = egui::Rect::from_min_size(origin, old);
+                        let original_available = if count == 1 {
+                            vec![original_root]
+                        } else {
+                            expected_unframed_cards(original_root, count, true)
+                                .into_iter()
+                                .map(|card| card.shrink(4.0))
+                                .collect()
+                        };
+                        for (index, (((id, image), (old_id, baseline)), available)) in after_images
+                            .iter()
+                            .zip(&before_images)
+                            .zip(original_available)
+                            .enumerate()
+                        {
+                            assert_square_composition(
+                                compact_backgrounds(&after)[index].rect,
+                                *image,
+                                count,
+                                ppp,
+                                available,
+                            );
+                            assert_eq!(id, old_id);
+                            let (_, original_image) = snapped_physical_image_fit(available, ppp);
+                            assert_same_physical_image(*image, original_image, available, ppp);
+                            assert_same_physical_image(*baseline, original_image, available, ppp);
+                            let mesh = avatar_mesh(&after, *id);
+                            {
+                                for uv in [
+                                    Pos2::ZERO,
+                                    Pos2::new(1.0, 0.0),
+                                    Pos2::new(0.0, 1.0),
+                                    Pos2::new(1.0, 1.0),
+                                ] {
+                                    assert!(
+                                        mesh.vertices.iter().any(|v| v.uv.distance(uv) < 0.000001),
+                                        "complete source corner: step={step_index}, ppp={ppp}, count={count}, origin={origin:?}, uv={uv:?}"
+                                    );
+                                }
+                            }
+                        }
+                        let backgrounds = compact_backgrounds(&after);
+                        assert_eq!(backgrounds.len(), count);
+                        for bg in &backgrounds {
+                            assert_eq!(bg.corner_radius, egui::CornerRadius::same(8));
+                            assert!(
+                                (bg.rect.width() - bg.rect.height()).abs() * ppp <= 1.001,
+                                "actual square card: step={step_index} ppp={ppp} count={count} origin={origin:?} rounded={rounded:?} card={:?}",
+                                bg.rect
+                            );
+                        }
+                        for pair in backgrounds.windows(2) {
+                            assert!(
+                                (pair[1].rect.top() - pair[0].rect.bottom() - 5.0).abs() < 0.001
+                            );
+                        }
+                        let stable = render(&ctx, &mut app, origin, desired);
+                        assert!(
+                            stable.viewport_output[&egui::ViewportId::ROOT]
+                                .commands
+                                .is_empty()
+                        );
+                        assert!(stable.textures_delta.set.is_empty());
+                        assert!(
+                            after.viewport_output[&egui::ViewportId::ROOT]
+                                .commands
+                                .is_empty()
+                        );
+                    }
+                    if count == 1 {
+                        // Explicit final close uses a different paint path: verify
+                        // its complete clock quad against the original canvas too.
+                        session_request(address, "a", 2, "emote/close", 0);
+                        let global_old = render(&ctx, &mut app, origin, old);
+                        for rounded in [
+                            desired,
+                            (desired * ppp).floor() / ppp,
+                            (desired * ppp).round() / ppp,
+                            (desired * ppp).ceil() / ppp,
+                        ] {
+                            let global = render(&ctx, &mut app, origin, rounded);
+                            assert_square_composition(
+                                compact_backgrounds(&global)[0].rect,
+                                clock_meshes(&global)[0].1,
+                                1,
+                                ppp,
+                                egui::Rect::from_min_size(origin, old),
+                            );
+                            assert_same_physical_image(
+                                clock_meshes(&global)[0].1,
+                                clock_meshes(&global_old)[0].1,
+                                egui::Rect::from_min_size(origin, old),
+                                ppp,
+                            );
+                            assert_compact_clock(&global, 55);
+                            assert!(
+                                global.viewport_output[&egui::ViewportId::ROOT]
+                                    .commands
+                                    .is_empty()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn fixed_resize(previous: Vec2, desired: Vec2) -> Vec<ViewportCommand> {
+    if !cfg!(target_os = "linux") {
+        return vec![ViewportCommand::InnerSize(desired)];
+    }
+    vec![
+        ViewportCommand::MinInnerSize(previous.min(desired)),
+        ViewportCommand::MaxInnerSize(previous.max(desired)),
+        ViewportCommand::MinInnerSize(desired),
+        ViewportCommand::MaxInnerSize(desired),
+        ViewportCommand::InnerSize(desired),
+    ]
+}
+
+#[test]
+fn root_fixed_size_transaction_survives_unacknowledged_square_and_restores_modes() {
+    let (ctx, mut app, address) = setup_defaults();
+    assert_waiting(&step(&ctx, &mut app, vec![]));
+    for id in ["a", "b"] {
+        session_request(address, id, 1, "emote", 42);
+    }
+    let desired = Vec2::new(
+        if cfg!(target_os = "linux") {
+            138.0
+        } else {
+            136.0
+        },
+        281.0,
+    );
+    let requested = step(&ctx, &mut app, vec![]);
+    assert_eq!(
+        requested.viewport_output[&egui::ViewportId::ROOT].commands,
+        fixed_resize(Vec2::splat(192.0), desired),
+        "root resize requests must follow the target platform policy"
+    );
+    for _ in 0..3 {
+        let refused = step(&ctx, &mut app, vec![]);
+        assert!(
+            refused.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .is_empty(),
+            "a compositor refusal must not cause retries"
+        );
+    }
+    let accepted = surface_step(&ctx, &mut app, desired);
+    assert!(
+        accepted.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .is_empty()
+    );
+    let images = avatars(&accepted);
+    assert_eq!(images.len(), 2);
+    assert!(
+        images
+            .iter()
+            .all(|(_, rect)| rect.size() == Vec2::splat(128.0))
+    );
+    let cards = compact_backgrounds(&accepted);
+    assert_eq!(cards.len(), 2);
+    assert_eq!(cards[0].rect.size(), Vec2::new(desired.x, 138.0));
+    assert_eq!(cards[1].rect.top() - cards[0].rect.bottom(), 5.0);
+
+    for ppp in [1.25_f32, 2.0, 1.0] {
+        ctx.set_pixels_per_point(ppp);
+        step(&ctx, &mut app, vec![]); // absorb egui's zoom transition
+        let scaled = surface_step(&ctx, &mut app, desired);
+        assert!(
+            scaled.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .is_empty()
+        );
+        for (_, image) in avatars(&scaled) {
+            assert_whole_physical_pixels(image, ppp, "fixed root at fractional DPI");
+            assert!((image.width() * ppp - 64.0 * (2.0 * ppp).floor()).abs() < 0.001);
+        }
+    }
+    // A count change while stable options are open targets only ROOT. Child
+    // sizing/lifecycle remain independent and no fixed root hints leak to it.
+    card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+    menu::take();
+    session_request(address, "c", 1, "emote", 84);
+    let three = step(&ctx, &mut app, vec![]);
+    let column = Vec2::new(desired.x, 424.0);
+    assert_eq!(
+        three.viewport_output[&egui::ViewportId::ROOT].commands,
+        fixed_resize(desired, column)
+    );
+    let menu_id = egui::ViewportId::from_hash_of("emote-options");
+    assert_eq!(
+        three.viewport_output[&menu_id].builder.resizable,
+        Some(false)
+    );
+    for viewport in menu::take().viewport_output.values() {
+        assert!(viewport.commands.iter().all(|command| !matches!(
+            command,
+            ViewportCommand::MinInnerSize(_) | ViewportCommand::MaxInnerSize(_)
+        )));
+    }
+    session_request(address, "c", 2, "emote/close", 0);
+    let two = step(&ctx, &mut app, vec![]);
+    assert_eq!(
+        two.viewport_output[&egui::ViewportId::ROOT].commands,
+        fixed_resize(column, desired)
+    );
+    assert!(painted_label(&menu::take(), "Avatar size").is_some());
+
+    // Both axes change in opposite directions; old fixed constraints must be
+    // relaxed before installing the new fixed pair, even without an OS ACK.
+    let horizontal = select_menu_option(&ctx, &mut app, "Horizontal");
+    let row = Vec2::new(277.0, 138.0);
+    assert_eq!(
+        horizontal.viewport_output[&egui::ViewportId::ROOT].commands,
+        fixed_resize(desired, row)
+    );
+    let vertical = select_menu_option(&ctx, &mut app, "Vertical");
+    assert_eq!(
+        vertical.viewport_output[&egui::ViewportId::ROOT].commands,
+        fixed_resize(row, desired)
+    );
+    session_request(address, "b", 2, "emote/close", 0);
+    let single = step(&ctx, &mut app, vec![]);
+    let composition = if cfg!(target_os = "linux") {
+        Vec2::splat(134.0)
+    } else {
+        Vec2::new(128.0, 130.0)
+    };
+    assert_eq!(
+        single.viewport_output[&egui::ViewportId::ROOT].commands,
+        fixed_resize(desired, composition)
+    );
+    session_request_state(address, "a", 2, "emote", 42, Some("clock"));
+    card_menu(&ctx, &mut app, Pos2::new(20.0, 20.0));
+    let waiting = card_action(&ctx, &mut app, "Close clock");
+    assert_eq!(
+        waiting.viewport_output[&egui::ViewportId::ROOT].commands,
+        fixed_resize(composition, Vec2::splat(192.0))
+    );
+    assert_waiting(&step(&ctx, &mut app, vec![]));
+}
+
 #[test]
 fn startup_options_match_preferred_defaults() {
     let (ctx, mut app, address) = setup_defaults();
@@ -3763,10 +4495,28 @@ fn startup_options_match_preferred_defaults() {
     assert!(
         output.viewport_output[&egui::ViewportId::ROOT]
             .commands
-            .contains(&ViewportCommand::InnerSize(Vec2::new(136.0, 281.0))),
+            .contains(&ViewportCommand::InnerSize(Vec2::new(
+                if cfg!(target_os = "linux") {
+                    138.0
+                } else {
+                    136.0
+                },
+                281.0
+            ))),
         "x2 avatars must request a compact vertical canvas"
     );
-    let output = surface_step(&ctx, &mut app, Vec2::new(136.0, 281.0));
+    let output = surface_step(
+        &ctx,
+        &mut app,
+        Vec2::new(
+            if cfg!(target_os = "linux") {
+                138.0
+            } else {
+                136.0
+            },
+            281.0,
+        ),
+    );
     assert!(frames(&output).is_empty());
     let images = avatars(&output);
     assert_eq!(images.len(), 2);

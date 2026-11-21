@@ -63,6 +63,7 @@ Exact OS error codes and text are host-specific.
 | Right-click a card → Move left / Move right | Move that card one visible position in Horizontal stacking; end positions are disabled |
 | Right-click a clock card → Close clock | Hide only this clock until its identity receives an ordinary image; the desktop keeps receiving |
 | Right-click a card titled exactly `TMP` → Close | Hide only this card (avatar or clock) until its session title changes from `TMP`; images and heartbeats do not reopen it |
+| Right-click → Close options (Linux only) | Dismiss only the options window |
 | Right-click → Exit | Close the window and shut down the owned receiver |
 
 A focus click requires press and release on the same active session card without
@@ -105,10 +106,41 @@ These controls do not close sender sessions or change the receiver protocol.
 
 The options use an independent, opaque native window, so all controls remain
 accessible even with a 128-pixel avatar; they are not clipped to the avatar's
-surface. Selecting an option, pressing Escape, closing the options window, or
-moving focus away after it has gained focus dismisses it. Exit closes the main
-avatar window and its receiver, not just the options. Native popup positioning
-and focus behavior depend on the window manager/compositor.
+surface. On Linux, moving the pointer into or out of options, or moving focus
+away, does not dismiss it; **Close options** is Linux-only. Repeating a root
+right-click on Linux closes the open options window; the next opens it again.
+Windows/macOS retain
+the original lifecycle: initial lack of focus does not close options, but losing
+focus after gaining it does. Escape or the native window-close request dismisses
+only options on every platform. Existing action-triggered closures remain: card moves,
+Close clock, checkbox changes and stacking selections dismiss options; sliders
+and the color picker stay open. Exit closes the main avatar window and its receiver,
+not just the options. Native positioning and focus behavior depend on the window
+manager/compositor. On Wayland the compositor controls where this independent
+window appears; it is not guaranteed to appear beside the click.
+
+The main window stays non-resizable. On Linux, each deliberate content-size change
+updates its fixed minimum/maximum canvas bounds together with the requested inner size;
+Windows/macOS retain a single inner-size request without changing min/max hints.
+At 100% scale, two default x2 vertical cards on Linux request **138×281 logical
+points** (square 138-point cards, four-point insets and a five-point separator);
+Windows/macOS retain 136×281. Requests
+are sent once per changed content size, not retried if a compositor refuses them.
+Native compositor acceptance remains a separate verification step.
+
+On Linux, active vertical unframed avatar and clock cards are **square within
+one physical pixel of native rounding**. The smallest safe side is searched in
+physical-pixel increments from the original full-image fit, preserving its
+physical PNG size, complete source corners, eight-point rounding, four-point
+packed insets and five-point gaps. The virtual 64×65 composition (one source row
+above the full 64×64 image) is recentered; card height and image Y may change.
+At effective 125% scale, aligned x2 single/pair requests are **108×108** and
+**112.8125×230.625 logical points**, while every PNG remains **128×128 physical
+pixels**. These are headless observations, not native compositor acceptance.
+Native-rounded root sizes are checked before painting fixed-size quads; refused
+or undersized transition surfaces retain the existing contain fit without resize
+retries. Horizontal stacking, frames, the waiting surface and Windows/macOS keep
+their previous geometry. Linux integer-scale cards also use the square policy.
 
 The canvas derives from the avatar's rendered image, never the reverse: the
 slider step **x1–x5** is the points per source texel of the 64-point image
@@ -123,7 +155,8 @@ artwork columns) contains the whole composition plus three logical points of
 snapping slack, so the framed tile is `(1100, 1092) × (65×step + 3) / 851` and
 the avatar still renders at the whole chosen multiplier. Checking **No frame**
 (or any nonzero transparency) reclaims the frame margins and shrinks each tile
-to exactly the composition. Unframed multi-avatar cards budget their real
+to the composition (with Linux vertical square sizing as described above).
+Unframed multi-avatar cards budget their real
 four-point insets and five-point gaps around the composition instead of
 deducting them from the image. At 100% display scale the avatar draws exactly
 `64×step` square pixels in every mode; at fractional scale factors the
@@ -142,7 +175,7 @@ the edges next to separators. The background and image draw mesh share that
 outline, so opaque PNG corners cannot cover it. Cached PNG pixels and label
 layout are unchanged. Window dimensions follow the framing choice: framed tiles
 add the frame margins around the composition, unframed tiles shrink to the
-composition. A framed single avatar
+composition, except for the Linux vertical square policy. A framed single avatar
 uses the same clear-opening inset as a framed multi-avatar tile; **No frame**
 retains its borderless fit. Nonzero transparency hides frames, independently of that
 checkbox; changing transparency does not reset the **No frame** selection.
@@ -430,7 +463,9 @@ source pixel, including the bottom path ends, remains visible without corner
 cropping. Avatar masking is unchanged. Ordinary, mixed and all-clock groups use
 the same canvas, insets and pixel multiplier. At slider step `s`, `n > 1`
 unframed tiles request `(n×(64s+8)+(n−1)×5, 65s+8)` horizontally or
-`(64s+8, n×(65s+8)+(n−1)×5)` vertically. Single unframed clocks and the global
+`(64s+8, n×(65s+8)+(n−1)×5)` vertically outside the Linux square policy.
+Linux vertical clocks use the same baseline-sized quads and safe square cards as
+avatars, including the global fallback. Single unframed clocks and the global
 fallback use the full allocated surface for the background and the same 64×65
 image fit as a single unframed avatar. The selected scale never changes. Opaque clocks still use the selected decorative
 frame unless **No frame** is checked; the global fallback remains unframed.
@@ -464,10 +499,11 @@ cargo clippy --all-targets -- -D warnings
 cargo build
 ```
 
-The default suite contains **120 tests** on Windows: 34 receiver, 56 headless
-window, 10 session lifecycle, 3 background-color store, 9 idle-clock image, and
-8 library unit tests (1 shadow-policy, 1 receiver display, 6 session helpers).
-The macOS-only native startup test is ignored by default and counted separately.
+The current Linux run passed **134 tests**: 34 receiver, 66 headless window,
+10 session lifecycle, 3 background-color store, 9 idle-clock image, and 12 library
+unit tests (including four cross-platform policy checks). Windows/macOS were
+not run for this candidate; target guards can change counts. The macOS-only
+native startup test is ignored by default and counted separately.
 See the [testing guide](docs/testing.md) for the exact breakdown, recorded
 limits, and the graphical `native_smoke` example.
 
@@ -484,7 +520,7 @@ graphics/toolchain libraries are required.
 | --- | --- |
 | **macOS — locally tested and compatible** | Production WGPU build and native framebuffer smoke passed (HTTP 204, expected RGB, clean close/port release). After relaunch with per-target sender `transparentBackground: true`, the human confirmed visible transparency: “ok, va perfecto ahora”. Native overlay shadows are disabled to avoid ghosting; that alone does not fix opaque sender pixels. |
 | Windows | Existing Glow source/build target, with historical Windows build, headless-test and native-smoke evidence in the testing guide; not executed in this session. |
-| Linux | Existing Glow source/build target with X11/Wayland enabled; not executed in this session. On Wayland, topmost placement and window moves depend on compositor support/policy. |
+| Linux | Glow with X11/Wayland enabled. The prior Linux Wayland/Hyprland native candidate received human acceptance: «para mi ya seria una version valida para linux». This exact controlled-integration candidate still needs native retesting; X11 is included by the Linux code gate but has no native acceptance. Topmost placement and window moves depend on compositor policy. |
 
 Local macOS acceptance is not a universal minimum macOS version, graphics-device
 or display-scale guarantee, nor proof of every manual window check. The earlier
