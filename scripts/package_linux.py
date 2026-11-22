@@ -17,7 +17,7 @@ import tempfile
 
 sys.dont_write_bytecode = True
 from audit_linux_licenses import (ROOT, TARGET, audit_files, command, digest, encode,
-                                 frozen, new_output, source_state, validate_audit)
+                                 frozen, new_output, registry_source_argument, source_state, validate_audit)
 
 NAME = 'gentle-emote-desktop'
 
@@ -165,7 +165,7 @@ def package(args):
     new_output(output, root)
     state = source_state(root)
     try:
-        audit = validate_audit(args.license_audit, root)
+        audit = validate_audit(args.license_audit, root, args.registry_source_root)
     finally:
         frozen(state, root)
     manifest = json.loads((args.license_audit / 'manifest.json').read_bytes())
@@ -185,7 +185,7 @@ def package(args):
             observation = inspect_elf(binary, root)
             copied = scratch / 'notices'
             shutil.copytree(args.license_audit, copied)
-            if validate_audit(copied, root) != audit:
+            if validate_audit(copied, root, args.registry_source_root) != audit:
                 raise RuntimeError('copied license audit differs from input')
             payload = {NAME: binary.read_bytes(), 'LICENSE': (root / 'LICENSE').read_bytes()}
             payload.update({'ThirdPartyNotices/' + name: data for name, data in audit_files(copied).items()})
@@ -212,6 +212,8 @@ def package(args):
             ).encode()
             private_roots = [root, scratch, wrapper_temp, Path.home(),
                              Path(os.environ.get('CARGO_HOME') or Path.home() / '.cargo')]
+            if args.registry_source_root is not None:
+                private_roots.append(args.registry_source_root)
             files = {}
             archive = scratch / (stem + '.tar.gz')
             with tarfile.open(archive, 'w:gz', format=tarfile.USTAR_FORMAT) as tar:
@@ -251,6 +253,7 @@ def main():
         'replacing Cargo flags. Outputs: archive, SHA256, external verification.json. '
         'Static inspection is not runtime or legal clearance.')
     parser.add_argument('--source-root', type=Path, default=ROOT, help='clean committed checkout')
+    registry_source_argument(parser)
     parser.add_argument('--release-tag', type=release_tag, required=True, help='label only; never creates a tag')
     parser.add_argument('--license-audit', type=Path, required=True, help='Linux audit directory to revalidate')
     parser.add_argument('--output', type=Path, required=True, help='NEW directory outside source; parent must exist')

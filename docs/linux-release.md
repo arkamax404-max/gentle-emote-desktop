@@ -16,11 +16,12 @@ Choose new output names with existing parents **outside the checkout**. Run from
 any directory, using absolute script paths if not in the checkout:
 
 ```sh
-python3 -B scripts/audit_linux_licenses.py --output /tmp/emote-linux-notices
-python3 -B scripts/audit_linux_licenses.py --validate /tmp/emote-linux-notices
+registry=/path/to/previously-authorized/registry/src
+python3 -B scripts/audit_linux_licenses.py --registry-source-root "$registry" --output /tmp/emote-linux-notices
+python3 -B scripts/audit_linux_licenses.py --registry-source-root "$registry" --validate /tmp/emote-linux-notices
 # Explicitly choose the intended wrapper executable, or deliberately choose none:
 export RUSTC_WRAPPER=''
-python3 -B scripts/package_linux.py --release-tag v0.1.5-rc.3 \
+python3 -B scripts/package_linux.py --registry-source-root "$registry" --release-tag v0.1.5-rc.3 \
   --license-audit /tmp/emote-linux-notices --output /tmp/emote-linux-package
 ```
 
@@ -44,11 +45,11 @@ the Python scripts; normal Cargo execution still follows Cargo's own configurati
 
 | Gate | Evidence and limits |
 | --- | --- |
-| Source | Clean committed HEAD; tracked-file SHA256/modes and manifest/lock hashes checked repeatedly through export; untracked files reject packaging. No source mutation is performed. |
+| Source | Tracked bytes and executable modes must match committed HEAD; tracked-file SHA256/modes and manifest/lock hashes checked repeatedly through export; untracked files reject packaging. No source mutation is performed. |
 | Cargo | Metadata uses `--offline --locked --filter-platform x86_64-unknown-linux-gnu`; build uses `--release --offline --locked --target x86_64-unknown-linux-gnu` in fresh system-temp storage. |
 | ELF | ELF64 little-endian x86_64, approved GNU interpreter, actual `NEEDED` and version-needs inspection with `readelf`; no RPATH/RUNPATH; `ldd` must resolve dependencies to system library locations. No raw host diagnostic paths enter receipts. |
 | glibc | Maximum observed numeric GLIBC version need, plus full version-needs names, is recorded. This is a requirement of this binary, **not a broad distro, GPU or display-server compatibility guarantee**. |
-| Privacy | Binary and all shipped texts are scanned for the actual checkout, build, wrapper, home/Cargo paths and common private home prefixes; detection rejects export, without changing original license bytes. This is not a claim of universal secret detection. |
+| Privacy | Binary and all shipped texts are scanned for the actual checkout, build, wrapper, home/Cargo paths, the explicit registry source root and common private home prefixes; detection rejects export, without changing original license bytes. This is not a claim of universal secret detection. |
 | Archive | Only regular files, one named top-level directory, no absolute/traversal/link members, executable mode 0755, text mode 0644, zero owner IDs and exact member sizes/SHA256; archive readback must match the complete external file inventory. |
 | Output | New output only; collisions and all validation/build failures before export leave no final artifacts. An export I/O error or source mutation during the final copy may leave an incomplete directory; never reuse it. |
 
@@ -65,9 +66,11 @@ untrusted archive paths. `archive_verified: true` is **not** native smoke proof;
 ## Original notices, not substitute licenses
 
 The Linux auditor reads dependency sources only within the checkout or
-`$CARGO_HOME/registry/src` (default: `$HOME/.cargo/registry/src`). Reading the
-selected registry source root requires the operator's authorization; selecting a
-path does not grant access. It rejects symlinks and paths outside those roots. It retains actual conventional license/notice files,
+the exact `--registry-source-root DIR` passed to both scripts. Omit it for
+checkout-only reads. `CARGO_HOME` selects Cargo's cache, not the Python read
+boundary. Reading the selected registry source root requires the operator's
+prior authorization; selecting a path does not grant access. It rejects symlinks
+and paths outside those roots. It retains actual conventional license/notice files,
 nested font attributions and copyright texts with hashes and package/version
 identities. Validation rederives metadata and bytes rather than trusting a supplied
 manifest, so omissions, extra payloads and tampering reject packaging. Clean-source

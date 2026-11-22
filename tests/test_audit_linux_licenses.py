@@ -11,13 +11,14 @@ class AuditTests(LinuxFixture):
         return self.cli('audit_linux_licenses.py', ['--source-root', self.root, mode, self.audit], scenario)
 
     def failure(self, message, mode='--output', scenario='clean'):
-        before = {str(p.relative_to(self.root)): p.read_bytes()
-                  for p in self.root.rglob('*') if p.is_file()}
+        def snapshot():
+            return {p: p.read_bytes() for base in (self.root, self.audit)
+                    for p in base.rglob('*') if p.is_file() and '.git' not in p.parts}
+        before = snapshot()
         result = self.audit_cli(mode, scenario)
         self.assertEqual((result.returncode, result.stdout, result.stderr),
                          (1, '', 'error: ' + message + '\n'))
-        self.assertEqual(before, {str(p.relative_to(self.root)): p.read_bytes()
-                                for p in self.root.rglob('*') if p.is_file()})
+        self.assertEqual(before, snapshot())
         if mode == '--output':
             self.assertFalse(self.audit.exists())
 
@@ -25,7 +26,7 @@ class AuditTests(LinuxFixture):
         self.generate()
         manifest = json.loads((self.audit / 'manifest.json').read_text())
         self.assertEqual(manifest['targets'], [TARGET])
-        self.assertEqual(manifest['source_sha'], 'a' * 40)
+        self.assertEqual(manifest['source_sha'], self.sha)
         self.assertEqual(len(manifest['packages']), 1)
         self.assertEqual(len(manifest['packages'][0]['files']), 2)
         self.assertNotIn(str(self.base), json.dumps(manifest))
@@ -43,6 +44,7 @@ class AuditTests(LinuxFixture):
         self.save_metadata()
         self.failure('no original license notices: fonts@1.2.3 (MIT)')
         (self.root / 'empty/LICENSE').write_text('See https://example.invalid/LICENSE')
+        self.snapshot()
         self.failure('no original license notices: fonts@1.2.3 (MIT)')
 
     def test_spdx_selection_needs_corresponding_original_text(self):
@@ -73,24 +75,39 @@ class AuditTests(LinuxFixture):
                     self.env['CARGO_HOME'] = str(cargo_home)
                 self.metadata['packages'][1]['manifest_path'] = str(crate / 'Cargo.toml')
                 self.save_metadata()
-                self.audit = self.base / ('configured-audit' if configured else 'default-audit')
-                self.generate()
+                label = 'configured' if configured else 'default'
+                self.registry_args = []
+                self.audit = self.base / (label + '-omitted')
+                with self.subTest(authorization='omitted'):
+                    self.failure('dependency source outside authorized roots')
+                self.audit = self.base / (label + '-audit')
+                authorized = ['--registry-source-root', str(cargo_home / 'registry/src')]
+                self.registry_args = authorized
+                generated = self.generate()
                 result = self.audit_cli('--validate')
-                self.assertEqual((result.returncode, result.stderr), (0, ''))
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, generated.stdout, ''))
                 self.assertTrue(json.loads(result.stdout)['notice_inventory_complete'])
-                before = {str(p.relative_to(self.audit)): p.read_bytes()
-                          for p in self.audit.rglob('*') if p.is_file()}
-                self.env['CARGO_HOME'] = str(home / 'different cargo')
-                self.failure('dependency source outside authorized roots', '--validate')
-                self.assertEqual(before, {str(p.relative_to(self.audit)): p.read_bytes()
-                                         for p in self.audit.rglob('*') if p.is_file()})
+                self.output = self.base / (label + '-rejected-export')
+                wrong = ['--registry-source-root', str(home / 'different cargo/registry/src')]
+                for args in ([], wrong):
+                    with self.subTest(authorization=args):
+                        self.registry_args = args
+                        self.failure('dependency source outside authorized roots', '--validate')
+                        self.rejected(self.package(), 'dependency source outside authorized roots')
+                self.registry_args = authorized
+                self.output = self.base / (label + '-export')
+                result = self.package()
+                self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                 (0, 'Packaged: ' + str(self.output) + '\n', ''))
                 alias = home / 'linked cargo'
                 alias.symlink_to(cargo_home, target_is_directory=True)
-                self.env['CARGO_HOME'] = str(alias)
+                self.registry_args = ['--registry-source-root', str(alias / 'registry/src')]
                 self.metadata['packages'][1]['manifest_path'] = str(
                     alias / 'registry/src/fixture-index/fonts-1.2.3/Cargo.toml')
                 self.save_metadata()
                 self.failure('symlink in dependency source', '--validate')
+                self.output = self.base / (label + '-symlink-export')
+                self.rejected(self.package(), 'symlink in dependency source')
 
     def supplement_fixture(self, release=False):
         crate = self.root / 'supplement-crate'
@@ -124,6 +141,7 @@ class AuditTests(LinuxFixture):
     def save_supplement(self):
         (self.supplements / 'manifest.json').write_text(json.dumps(
             {'schema_version': 1, 'packages': [self.entry]}))
+        self.snapshot()
 
     def test_exact_and_same_version_supplements_retain_provenance(self):
         self.supplement_fixture(release=True)
@@ -163,12 +181,14 @@ class AuditTests(LinuxFixture):
         self.entry = copy.deepcopy(original)
         self.save_supplement()
         (self.supplements / self.entry['files'][0]['path']).write_text('tampered')
+        self.snapshot()
         self.failure('supplement hash mismatch: fonts@1.2.3')
 
     def test_nested_font_witnesses_cannot_supply_crate_mit(self):
         (self.crate / 'fonts/UFL.txt').write_text('UBUNTU FONT LICENCE Version 1.0\n')
         self.metadata['packages'][1]['license'] = 'MIT AND OFL-1.1 AND Ubuntu-font-1.0'
         self.save_metadata()
+        self.snapshot()
         self.generate()
         result = self.audit_cli('--validate')
         self.assertEqual((result.returncode, result.stderr), (0, ''))
@@ -178,6 +198,7 @@ class AuditTests(LinuxFixture):
         self.metadata['packages'][1].update(manifest_path=str(empty / 'Cargo.toml'), license='MIT')
         self.save_metadata()
         self.audit = self.base / 'font-only-audit'
+        self.snapshot()
         self.failure('no original license notices: fonts@1.2.3 (MIT)')
 
     def test_checked_in_linux_supplements_and_source_attributions(self):
@@ -187,10 +208,13 @@ class AuditTests(LinuxFixture):
         shutil.copytree(checked, self.root / 'scripts/linux-license-supplements')
         self.metadata['packages'] = self.metadata['packages'][:1]
         self.metadata['resolve']['nodes'] = [{'id': 'root'}]
+        registry = self.base / 'authorized registry'
+        self.registry_args = ['--registry-source-root', str(registry)]
         for entry in manifest['packages']:
             key = entry['name'] + '@' + entry['version']
-            crate = self.root / 'vendor' / key
-            crate.mkdir()
+            # Exercise VCS and source-prefix reads for an explicitly authorized registry crate.
+            crate = (registry if entry['name'] == 'gl_generator' else self.root / 'vendor') / key
+            crate.mkdir(parents=True)
             (crate / 'Cargo.toml').write_text('fixture')
             (crate / '.cargo_vcs_info.json').write_text(json.dumps({
                 'git': {'sha1': entry['crate_revision']}, 'path_in_vcs': entry['path_in_vcs']}))
@@ -210,6 +234,7 @@ class AuditTests(LinuxFixture):
                 'repository': entry['repository'], 'manifest_path': str(crate / 'Cargo.toml')})
             self.metadata['resolve']['nodes'].append({'id': key})
         self.save_metadata()
+        self.snapshot()
         self.generate()
         result = self.audit_cli('--validate')
         self.assertEqual((result.returncode, result.stderr), (0, ''))
@@ -223,7 +248,7 @@ class AuditTests(LinuxFixture):
                         {r['notice_path'] for r in accesskit['files']})
         header_entry = next(e for e in manifest['packages'] if e['name'] == 'gl_generator')
         header = next(r for r in header_entry['files'] if r['role'] == 'source-attribution')
-        (self.root / 'vendor/gl_generator@0.14.0' / header['crate_path']).write_text('changed')
+        (registry / 'gl_generator@0.14.0' / header['crate_path']).write_text('changed')
         self.failure('supplement source attribution mismatch: gl_generator@0.14.0', '--validate')
 
     def test_binding_collision_symlink_and_manifest_omission(self):

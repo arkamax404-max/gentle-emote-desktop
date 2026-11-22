@@ -48,13 +48,11 @@ def fake_run(command, **kwargs):
     if tool == 'git':
         if args[1:3] == ['rev-parse', 'HEAD']:
             reads += 1
-            out = ('b' if scenario == 'mutated' and reads > 1 else 'a') * 40 + '\n'
-        elif args[1] == 'status':
-            out = '?? dirty\n' if scenario == 'dirty' else ''
-        elif args[1] == 'ls-files':
-            out = '\0'.join(str(p.relative_to(root)) for p in root.rglob('*') if p.is_file()) + '\0'
-        else:
-            raise AssertionError(args)
+            if scenario == 'mutated' and reads > 1:
+                args[2] = 'HEAD^'
+        elif args[1] == 'status' and scenario == 'dirty':
+            return subprocess.CompletedProcess(args, 0, '?? dirty\n', '')
+        return real_run(args, **kwargs)
     elif tool == 'cargo':
         if args[1] == 'metadata':
             assert args[2:] == ['--offline','--locked','--format-version','1','--filter-platform','x86_64-unknown-linux-gnu']
@@ -147,13 +145,37 @@ class LinuxFixture(unittest.TestCase):
         self.env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', RUSTC_WRAPPER='',
                         RUSTFLAGS='--cfg=with_space', CARGO_ENCODED_RUSTFLAGS='',
                         RUSTC='/compiler with spaces', RUSTC_WORKSPACE_WRAPPER='/workspace wrapper')
+        self.env = {k: v for k, v in self.env.items() if not k.startswith('GIT_')}
+        self.env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_ATTR_NOSYSTEM='1',
+                        HOME=str(self.base / 'home'), CARGO_HOME=str(self.base / 'cargo home'))
+        self.registry_args = []
+        self.git('init', '--template=', '-b', 'fixture')
+        self.snapshot()
+        self.snapshot()  # A parent with identical bytes exercises frozen-source checking.
+
+    def git(self, *args, **kwargs):
+        return subprocess.run(['git', *args], cwd=self.root, env=self.env,
+                              capture_output=True, check=True, **kwargs).stdout
+
+    def snapshot(self):
+        data = b'commit refs/heads/fixture\ncommitter Fixture <fixture@example.invalid> 1 +0000\ndata 7\nfixture\n'
+        if hasattr(self, 'sha'):
+            data += f'from {self.sha}\n'.encode()
+        for path in self.root.rglob('*'):
+            if path.is_file() and '.git' not in path.parts:
+                content = path.read_bytes()
+                data += f'M 100644 inline {path.relative_to(self.root)}\ndata {len(content)}\n'.encode()
+                data += content + b'\n'
+        self.git('fast-import', '--quiet', input=data + b'\n')
+        self.git('read-tree', 'HEAD')
+        self.sha = self.git('rev-parse', 'HEAD').decode().strip()
 
     def save_metadata(self):
         (self.base / 'metadata.json').write_text(json.dumps(self.metadata))
 
     def cli(self, script, args, scenario='clean'):
         return subprocess.run([sys.executable, '-B', str(self.launcher), str(self.root),
-                               scenario, str(ROOT / 'scripts' / script), *map(str, args)],
+                               scenario, str(ROOT / 'scripts' / script), *map(str, args), *self.registry_args],
                               cwd=self.base, env=self.env, text=True, capture_output=True, timeout=10)
 
     def generate(self):
@@ -178,6 +200,7 @@ class PackageTests(LinuxFixture):
             result = self.cli(script, ['--help'])
             self.assertEqual((result.returncode, result.stderr), (0, ''))
             self.assertIn('--source-root', result.stdout)
+            self.assertIn('--registry-source-root', result.stdout)
             result = self.cli(script, ['--publish'])
             self.assertEqual(result.returncode, 2)
             self.assertEqual(result.stdout, '')
@@ -197,6 +220,34 @@ class PackageTests(LinuxFixture):
                                   ('build-failed', 'cargo build failed (exit 7)')]:
             with self.subTest(scenario=scenario):
                 self.rejected(self.package(scenario), message)
+
+    def test_git_hidden_edits_reject_audit_and_package(self):
+        self.generate()
+        license_file = self.root / 'LICENSE'
+        original = license_file.read_bytes()
+        permissions = license_file.stat().st_mode & 0o777
+        audited = {p: p.read_bytes() for p in self.audit.rglob('*') if p.is_file()}
+        for case, flag, data, mode in (
+                ('assume', 'assume-unchanged', original + b'hidden amendment\n', permissions),
+                ('skip', 'skip-worktree', original + b'hidden amendment\n', permissions),
+                ('executable', 'assume-unchanged', original, permissions ^ 0o100)):
+            self.git('update-index', '--' + flag, 'LICENSE')
+            license_file.write_bytes(data)
+            license_file.chmod(mode)
+            self.assertEqual(self.git('status', '--porcelain', '--untracked-files=all'), b'')
+            notices = self.base / (case + '-notices')
+            self.output = self.base / (case + '-package')
+            audit = self.cli('audit_linux_licenses.py', ['--source-root', self.root, '--output', notices])
+            for result, output in ((self.package(), self.output), (audit, notices)):
+                with self.subTest(output=output.name):
+                    self.output = output
+                    self.rejected(result, 'source must be clean and committed')
+                    self.assertEqual((license_file.read_bytes(), license_file.stat().st_mode & 0o777),
+                                     (data, mode))
+                    self.assertEqual(audited, {p: p.read_bytes() for p in self.audit.rglob('*') if p.is_file()})
+            license_file.write_bytes(original)
+            license_file.chmod(permissions)
+            self.git('update-index', '--no-' + flag, 'LICENSE')
 
     def test_output_collision_and_explicit_wrapper(self):
         self.generate()
@@ -225,8 +276,16 @@ class PackageTests(LinuxFixture):
         notice.write_text('tampered')
         self.rejected(self.package(), 'notice files do not match manifest')
         notice.write_bytes(original)
-        (self.root / 'LICENSE').write_text(str(self.root))
-        self.rejected(self.package(), 'private path in payload')
+        registry = self.base / 'authorized registry'
+        registry.mkdir()
+        for name, private in (('checkout', self.root), ('registry', registry)):
+            with self.subTest(private=name):
+                self.registry_args = ['--registry-source-root', str(registry)] if name == 'registry' else []
+                (self.root / 'LICENSE').write_text(str(private))
+                self.snapshot()
+                self.audit = self.base / (name + '-private-notices')
+                self.generate()
+                self.rejected(self.package(), 'private path in payload')
 
     def test_equivalent_system_loader_alias_exports_portable_evidence(self):
         self.generate()
@@ -259,7 +318,8 @@ class PackageTests(LinuxFixture):
         def snapshot():
             return {(base.name, str(path.relative_to(base))):
                     (path.read_bytes(), path.stat().st_mode & 0o777)
-                    for base in (self.root, self.audit) for path in base.rglob('*') if path.is_file()}
+                    for base in (self.root, self.audit) for path in base.rglob('*')
+                    if path.is_file() and '.git' not in path.parts}
         before = snapshot()
         for scenario in ('loader-alias-private', 'loader-alias-mismatched',
                          'loader-alias-missing', 'loader-alias-unapproved', 'loader-needed-wrong'):
@@ -280,7 +340,7 @@ class PackageTests(LinuxFixture):
         sha = hashlib.sha256(archive.read_bytes()).hexdigest()
         self.assertEqual(Path(str(archive) + '.sha256').read_text(), sha + '  ' + archive.name + '\n')
         evidence = json.loads((self.output / 'verification.json').read_text())
-        self.assertEqual(evidence['source_sha'], 'a' * 40)
+        self.assertEqual(evidence['source_sha'], self.sha)
         self.assertEqual(evidence['rust_target'], TARGET)
         self.assertEqual(evidence['cargo_version'], '0.1.0')
         self.assertEqual(evidence['required_glibc'], '2.43')

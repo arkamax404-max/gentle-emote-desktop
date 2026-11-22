@@ -17,23 +17,21 @@ from audit_macos_licenses import (digest, select_license, audit_files, summary, 
                                   normalized_repository, supplement_path)
 
 TARGET = 'x86_64-unknown-linux-gnu'
-REGISTRY = (Path(os.environ.get('CARGO_HOME') or Path.home() / '.cargo') /
-            'registry/src').absolute()
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def command(args, root, error, env=None):
+def command(args, root, error, env=None, *, text=True):
     result = subprocess.run(list(map(str, args)), cwd=root, env=env,
-                            capture_output=True, text=True)
+                            capture_output=True, text=text)
     if result.returncode:
         # Child diagnostics can contain private paths; never persist them.
         raise RuntimeError(error + ' (exit ' + str(result.returncode) + ')')
     return result.stdout
 
 
-def source_file(path, root):
+def source_file(path, root, registry=None):
     path = Path(os.path.abspath(path))
-    if not any(beneath(path, base) for base in (root, REGISTRY)):
+    if not beneath(path, root) and (registry is None or not beneath(path, registry)):
         raise RuntimeError('dependency source outside authorized roots')
     if any(p.is_symlink() for p in (path, *path.parents)):
         raise RuntimeError('symlink in dependency source')
@@ -46,15 +44,23 @@ def source_state(root):
                     'source status unavailable')
     if dirty or not re.fullmatch('[0-9a-f]{40,64}', sha):
         raise RuntimeError('source must be clean and committed')
-    tracked = command(['git', 'ls-files', '-z'], root, 'source inventory unavailable').split('\0')
+    tracked = command(['git', '--no-replace-objects', 'ls-tree', '-rz', sha], root,
+                      'source inventory unavailable', text=False)
     hashes = {}
-    for name in filter(None, tracked):
+    for record in filter(None, os.fsdecode(tracked).split('\0')):
+        entry, name = record.split('\t', 1)
+        mode, kind, oid = entry.split()
         if Path(name).is_absolute() or '..' in Path(name).parts:
             raise RuntimeError('invalid tracked source path')
         path = source_file(root / name, root)
-        if not path.is_file():
+        if kind != 'blob' or mode not in ('100644', '100755') or not path.is_file():
             raise RuntimeError('non-regular tracked source')
-        hashes[name] = [digest(path.read_bytes()), path.stat().st_mode & 0o777]
+        data, permissions = path.read_bytes(), path.stat().st_mode & 0o777
+        committed = command(['git', '--no-replace-objects', 'cat-file', 'blob', oid], root,
+                            'source blob unavailable', text=False)
+        if data != committed or bool(permissions & 0o100) != (mode == '100755'):
+            raise RuntimeError('source must be clean and committed')
+        hashes[name] = [digest(data), permissions]
     if not hashes:
         raise RuntimeError('source must be clean and committed')
     return sha, hashes
@@ -118,7 +124,7 @@ def notices(crate, root):
     return payload
 
 
-def supplemental_notices(package, crate, root, key):
+def supplemental_notices(package, crate, root, crate_root, key):
     """Linux-only originals. Never import Darwin inventory or exceptions."""
     base = root / 'scripts/linux-license-supplements'
     manifest_path = supplement_path(base, 'manifest.json')
@@ -134,7 +140,7 @@ def supplemental_notices(package, crate, root, key):
         if not candidates:
             return {}, None, []
         entry = next(e for e in candidates if e['version'] == package['version'])
-        vcs = json.loads(source_file(crate / '.cargo_vcs_info.json', root).read_bytes())
+        vcs = json.loads(source_file(crate / '.cargo_vcs_info.json', crate_root).read_bytes())
         revision, notice_revision = entry['crate_revision'], entry['notice_revision']
         kind = entry['provenance_kind']
         if (entry['repository'] != normalized_repository(package['repository']) or
@@ -191,7 +197,7 @@ def supplemental_notices(package, crate, root, key):
         if digest(data) != record['sha256'] or not data.strip():
             raise RuntimeError('supplement hash mismatch: ' + key)
         if record['role'] == 'source-attribution':
-            source = source_file(crate / record['crate_path'], root)
+            source = source_file(crate / record['crate_path'], crate_root)
             if source.read_bytes()[:record['prefix_bytes']] != data:
                 raise RuntimeError('supplement source attribution mismatch: ' + key)
         if record['role'] == 'license':
@@ -200,7 +206,7 @@ def supplemental_notices(package, crate, root, key):
     return payload, entry, license_texts
 
 
-def inventory(root):
+def inventory(root, registry=None):
     state = source_state(root)
     cargo = shutil.which('cargo')
     if not cargo:
@@ -225,15 +231,16 @@ def inventory(root):
             selected = select_license(package['license'])
         except (ValueError, IndexError):
             raise RuntimeError('unsupported or missing SPDX license: ' + key) from None
-        crate = source_file(Path(package['manifest_path']).parent, root)
-        files = notices(crate, root)
+        crate = source_file(Path(package['manifest_path']).parent, root, registry)
+        crate_root = root if beneath(crate, root) else registry
+        files = notices(crate, crate_root)
         # Only original conventional license payloads can witness the selected
         # grant; nested font attribution remains included but cannot replace it.
         license_texts = [re.sub(r'\s+', ' ', data.decode(errors='replace').lower())
                          for name, data in files.items()
                          if len(Path(name).parts) == 1 and re.match(
                              r'^(licen[cs]e|copying|unlicense|copyright)', name, re.I)]
-        supplements, provenance, supplement_texts = supplemental_notices(package, crate, root, key)
+        supplements, provenance, supplement_texts = supplemental_notices(package, crate, root, crate_root, key)
         files.update(supplements)
         license_texts.extend(supplement_texts)
         for license_id in selected:
@@ -270,11 +277,11 @@ def encode(value):
     return (json.dumps(value, indent=2, sort_keys=True) + '\n').encode()
 
 
-def validate_audit(audit_dir, root):
+def validate_audit(audit_dir, root, registry=None):
     files = audit_files(Path(audit_dir).absolute())
     manifest_bytes = files.pop('manifest.json')
     manifest = json.loads(manifest_bytes)
-    expected, payload = inventory(root)
+    expected, payload = inventory(root, registry)
     if manifest != expected:
         raise RuntimeError('manifest does not match source closure')
     if files != payload:
@@ -282,10 +289,10 @@ def validate_audit(audit_dir, root):
     return summary(manifest_bytes, manifest, payload)
 
 
-def generate(output, root):
+def generate(output, root, registry=None):
     new_output(output, root)
     state = source_state(root)
-    manifest, payload = inventory(root)
+    manifest, payload = inventory(root, registry)
     with tempfile.TemporaryDirectory(prefix='emote-linux-notices-') as temp:
         stage = Path(temp) / 'notices'
         stage.mkdir()
@@ -293,10 +300,15 @@ def generate(output, root):
             dest = stage / relative
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(data)
-        result = validate_audit(stage, root)
+        result = validate_audit(stage, root, registry)
         frozen(state, root)
         shutil.copytree(stage, output)
     return result
+
+
+def registry_source_argument(parser):
+    parser.add_argument('--registry-source-root', metavar='DIR', type=lambda p: Path(os.path.abspath(p)),
+                        help='explicitly authorized Cargo registry source root; default: checkout only')
 
 
 def main():
@@ -309,11 +321,12 @@ def main():
     mode.add_argument('--output', type=Path, help='NEW directory outside source; existing parent required')
     mode.add_argument('--validate', type=Path, help='rederive exact source closure and notice bytes')
     parser.add_argument('--source-root', type=Path, default=ROOT, help='clean committed checkout')
+    registry_source_argument(parser)
     args = parser.parse_args()
     try:
-        root = args.source_root.resolve(strict=True)
-        result = (generate(args.output.absolute(), root) if args.output is not None
-                  else validate_audit(args.validate, root))
+        roots = args.source_root.resolve(strict=True), args.registry_source_root
+        result = (generate(args.output.absolute(), *roots) if args.output is not None
+                  else validate_audit(args.validate, *roots))
     except (RuntimeError, OSError, ValueError, KeyError, TypeError, IndexError) as error:
         print('error: ' + (str(error) if isinstance(error, RuntimeError) else 'invalid audit'), file=sys.stderr)
         return 1
