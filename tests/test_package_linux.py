@@ -19,9 +19,24 @@ scenario = sys.argv.pop(1)
 script = sys.argv.pop(1)
 real_run = subprocess.run
 real_is_file = pathlib.Path.is_file
-# A fictional system library exists only in this fake-tool fixture.
-pathlib.Path.is_file = lambda path: (True if str(path) == '/usr/lib/fixture-libc.so.6'
-                                     else real_is_file(path))
+# Isolated inspection model: both standard loader spellings resolve to
+# one regular system file, independent of Arch/Debian filesystem layout.
+real_resolve = pathlib.Path.resolve
+aliases = {'/lib64/ld-linux-x86-64.so.2', '/usr/lib64/ld-linux-x86-64.so.2'}
+canonical = pathlib.Path('/usr/lib/fixture-loader.so')
+fixture_libraries = {'libgcc_s.so.1': '/usr/lib/fixture-libgcc_s.so.1',
+                     'libm.so.6': '/usr/lib/fixture-libm.so.6',
+                     'libc.so.6': '/usr/lib/fixture-libc.so.6'}
+def loader_resolve(path, *args, **kwargs):
+    return canonical if str(path) in aliases else real_resolve(path, *args, **kwargs)
+def loader_is_file(path):
+    if str(path) in aliases or path == canonical or str(path) in fixture_libraries.values():
+        return True
+    if str(path) == '/usr/lib/missing-loader.so':
+        return False
+    return real_is_file(path)
+pathlib.Path.resolve = loader_resolve
+pathlib.Path.is_file = loader_is_file
 reads = 0
 platform.system = lambda: 'Linux'
 platform.machine = lambda: 'x86_64'
@@ -69,12 +84,29 @@ def fake_run(command, **kwargs):
             out = '[Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]\n'
         elif '-dW' in args:
             out = ' 0x01 (NEEDED) Shared library: [libc.so.6]\n'
+            if scenario.startswith('loader-needed'):
+                out = ''.join(' 0x01 (NEEDED) Shared library: [' + name + ']\n'
+                              for name in (*fixture_libraries, 'ld-linux-x86-64.so.2'))
             if scenario == 'rpath': out += ' 0x02 (RUNPATH) Library runpath: [/home/private/lib]\n'
         else:
             out = "Version needs section '.gnu.version_r' contains 1 entry:\n  Name: GLIBC_2.43 Flags: none Version: 2\n"
     elif tool == 'ldd':
         out = 'libc.so.6 => /usr/lib/fixture-libc.so.6 (0x123)\n/lib64/ld-linux-x86-64.so.2 (0x456)\n'
         if scenario == 'missing-lib': out = 'libc.so.6 => not found\n'
+        if scenario.startswith(('loader-alias', 'loader-needed')):
+            requested = '/lib64/ld-linux-x86-64.so.2'
+            destination = '/usr/lib64/ld-linux-x86-64.so.2'
+            if scenario == 'loader-alias-private': destination = '/home/private/ld-linux-x86-64.so.2'
+            if scenario == 'loader-alias-mismatched': destination = '/usr/lib/fixture-libc.so.6'
+            if scenario == 'loader-alias-missing': destination = '/usr/lib/missing-loader.so'
+            if scenario == 'loader-alias-unapproved': requested = '/usr/lib/other-loader.so'
+            out = 'libc.so.6 => /usr/lib/fixture-libc.so.6 (0x123)\n' + requested + ' => ' + destination + ' (0x456)\n'
+            if scenario.startswith('loader-needed'):
+                if scenario == 'loader-needed-wrong': destination = fixture_libraries['libc.so.6']
+                loader_line = requested + ' => ' + destination + ' (0x456)\n'
+                if scenario == 'loader-needed-direct': loader_line = requested + ' (0x456)\n'
+                out = ''.join(name + ' => ' + path + ' (0x123)\n'
+                              for name, path in fixture_libraries.items()) + loader_line
     else:
         raise AssertionError(args)
     result = subprocess.CompletedProcess(args, code, out, err)
@@ -195,6 +227,45 @@ class PackageTests(LinuxFixture):
         notice.write_bytes(original)
         (self.root / 'LICENSE').write_text(str(self.root))
         self.rejected(self.package(), 'private path in payload')
+
+    def test_equivalent_system_loader_alias_exports_portable_evidence(self):
+        self.generate()
+        result = self.package('loader-alias')
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (0, 'Packaged: ' + str(self.output) + '\n', ''))
+        evidence = json.loads((self.output / 'verification.json').read_text())
+        self.assertEqual(evidence['interpreter'], '/lib64/ld-linux-x86-64.so.2')
+        self.assertEqual(evidence['resolved_libraries'], ['ld-linux-x86-64.so.2', 'libc.so.6'])
+        self.assertNotIn('fixture-loader', json.dumps(evidence))
+        self.assertTrue(evidence['archive_verified'])
+        self.assertFalse(evidence['runtime_verified'])
+
+    def test_observed_four_needed_libraries_resolve_with_alias_and_direct_loader(self):
+        self.generate()
+        expected = sorted(['libgcc_s.so.1', 'libm.so.6', 'libc.so.6', 'ld-linux-x86-64.so.2'])
+        for scenario in ('loader-needed-alias', 'loader-needed-direct'):
+            with self.subTest(scenario=scenario):
+                self.output = self.base / scenario
+                result = self.package(scenario)
+                self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                 (0, 'Packaged: ' + str(self.output) + '\n', ''))
+                evidence = json.loads((self.output / 'verification.json').read_text())
+                self.assertEqual(evidence['needed'], expected)
+                self.assertEqual(evidence['resolved_libraries'], expected)
+                self.assertEqual(evidence['interpreter'], '/lib64/ld-linux-x86-64.so.2')
+
+    def test_private_mismatched_missing_and_unapproved_loader_aliases_never_export(self):
+        self.generate()
+        def snapshot():
+            return {(base.name, str(path.relative_to(base))):
+                    (path.read_bytes(), path.stat().st_mode & 0o777)
+                    for base in (self.root, self.audit) for path in base.rglob('*') if path.is_file()}
+        before = snapshot()
+        for scenario in ('loader-alias-private', 'loader-alias-mismatched',
+                         'loader-alias-missing', 'loader-alias-unapproved', 'loader-needed-wrong'):
+            with self.subTest(scenario=scenario):
+                self.rejected(self.package(scenario), 'unrecognized or private native dependency resolution')
+                self.assertEqual(snapshot(), before)
 
     def test_archive_modes_hashes_provenance_and_wrapper_spaces(self):
         self.generate()

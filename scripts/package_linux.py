@@ -98,6 +98,9 @@ def inspect_elf(binary, root):
         if not line:
             continue
         match = re.fullmatch(r'([A-Za-z0-9_+.-]+) => (/(?:usr/)?lib(?:64)?/[^ ]+) \(0x[0-9a-fA-F]+\)', line)
+        loader_alias = re.fullmatch(re.escape(interpreters[0]) +
+                                    r' => (/(?:usr/)?lib(?:64)?/[^ ]+) \(0x[0-9a-fA-F]+\)', line)
+        loader_direct = re.fullmatch(re.escape(interpreters[0]) + r' \(0x[0-9a-fA-F]+\)', line)
         if match:
             resolved_path = Path(match[2])
             system_roots = [Path(p).resolve() for p in ('/lib', '/lib64', '/usr/lib', '/usr/lib64')]
@@ -106,6 +109,20 @@ def inspect_elf(binary, root):
                             for base in system_roots)):
                 raise RuntimeError('unresolved or private native dependency')
             libraries.add(match[1])
+        elif loader_alias or loader_direct:
+            approved = Path(interpreters[0])
+            destination = Path(loader_alias[1]) if loader_alias else approved
+            system_roots = [Path(p).resolve() for p in ('/lib', '/lib64', '/usr/lib', '/usr/lib64')]
+            # GNU ldd may print an absolute interpreter => absolute loader.
+            # Accept only the approved regular loader's canonical identity,
+            # never a private path, another system file or a NEEDED mapping.
+            if ('..' in destination.parts or not approved.is_file() or not destination.is_file() or
+                    destination.resolve() != approved.resolve() or
+                    not any(base in approved.resolve().parents for base in system_roots)):
+                raise RuntimeError('unrecognized or private native dependency resolution')
+            # Some GNU binaries explicitly NEEDED the loader's SONAME. Only
+            # a verified loader observation (direct or alias) closes that need.
+            libraries.add(approved.name)
         elif re.fullmatch(r'/(?:usr/)?lib(?:64)?/[^ ]+ \(0x[0-9a-fA-F]+\)', line):
             continue
         elif re.fullmatch(r'linux-vdso\.so\.1 \(0x[0-9a-fA-F]+\)', line):
