@@ -136,10 +136,10 @@ def supplemental_notices(package, crate, root, crate_root, key):
         identities = [(e['name'], e['version']) for e in entries]
         if manifest['schema_version'] != 1 or len(identities) != len(set(identities)):
             raise ValueError()
-        candidates = [e for e in entries if e['name'] == package['name']]
-        if not candidates:
+        identity = (package['name'], package['version'])
+        entry = next((e for e in entries if (e['name'], e['version']) == identity), None)
+        if entry is None:
             return {}, None, []
-        entry = next(e for e in candidates if e['version'] == package['version'])
         vcs = json.loads(source_file(crate / '.cargo_vcs_info.json', crate_root).read_bytes())
         revision, notice_revision = entry['crate_revision'], entry['notice_revision']
         kind = entry['provenance_kind']
@@ -186,7 +186,7 @@ def supplemental_notices(package, crate, root, crate_root, key):
             else:
                 raise ValueError()
             records.append((record, supplement_path(base, relative)))
-    except (OSError, ValueError, KeyError, TypeError, StopIteration):
+    except (OSError, ValueError, KeyError, TypeError):
         raise RuntimeError('supplement provenance mismatch: ' + key) from None
     payload, license_texts = {}, []
     for record, path in records:

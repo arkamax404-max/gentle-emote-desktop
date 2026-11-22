@@ -109,8 +109,8 @@ class AuditTests(LinuxFixture):
                 self.output = self.base / (label + '-symlink-export')
                 self.rejected(self.package(), 'symlink in dependency source')
 
-    def supplement_fixture(self, release=False):
-        crate = self.root / 'supplement-crate'
+    def supplement_fixture(self, release=False, *, crate_root=None):
+        crate = (crate_root or self.root) / 'supplement-crate'
         crate.mkdir()
         (crate / 'Cargo.toml').write_text('fixture')
         (crate / '.cargo_vcs_info.json').write_text(json.dumps({
@@ -155,11 +155,51 @@ class AuditTests(LinuxFixture):
         self.save_supplement()
         self.failure('supplement provenance mismatch: fonts@1.2.3', '--validate')
 
-    def test_supplement_binding_missing_tampered_paths_and_urls_fail_closed(self):
+    def test_supplements_are_scoped_to_the_exact_resolved_version(self):
+        other = dict(self.metadata['packages'][1], id='fonts-old', version='1.2.2')
         self.supplement_fixture()
+        project, pinned = self.metadata['packages']
+        for both in (False, True):
+            with self.subTest(both=both):
+                packages = [pinned, other] if both else [other]
+                self.metadata['packages'] = [project, *packages]
+                self.metadata['resolve']['nodes'] = [{'id': p['id']} for p in [project, *packages]]
+                self.save_metadata()
+                self.audit = self.base / f'audit-{both}'
+                result = self.audit_cli()
+                self.assertEqual((result.returncode, result.stderr, self.audit.exists()), (0, '', True),
+                                 repr(result.stdout))
+                manifest = (self.audit / 'manifest.json').read_bytes()
+                records = {p['version']: p for p in json.loads(manifest)['packages']}
+                self.assertEqual(set(records), {p['version'] for p in packages})
+                original = records['1.2.2']
+                self.assertEqual(original['notice_provenance'], 'original files from resolved Cargo package')
+                prefix = 'packages/fonts@1.2.2/'
+                self.assertEqual([f['path'] for f in original['files']],
+                                 [prefix + 'LICENSE-MIT', prefix + 'fonts/OFL.txt'])
+                self.assertFalse((self.audit / prefix / 'supplemental').exists())
+                if both:
+                    self.assertEqual(records['1.2.3']['notice_provenance'], self.entry)
+                    self.assertTrue((self.audit / 'packages/fonts@1.2.3/supplemental/LICENSE-MIT').is_file())
+                stdout = json.dumps(dict(manifest_sha256=hashlib.sha256(manifest).hexdigest(),
+                                         package_count=len(packages), file_count=2 + both,
+                                         notice_inventory_complete=True, legal_audit_complete=False,
+                                         license_exceptions=[]), sort_keys=True) + '\n'
+                self.assertEqual(result.stdout, stdout)
+                result = self.audit_cli('--validate')
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, stdout, ''))
+        result = self.package()
+        self.assertEqual((result.returncode, result.stdout, result.stderr),
+                         (0, f'Packaged: {self.output}\n', ''))
+        self.assertTrue((self.output / 'verification.json').is_file())
+
+    def test_supplement_binding_missing_tampered_paths_and_urls_fail_closed(self):
+        registry = self.base / 'authorized registry'
+        registry.mkdir()
+        self.registry_args = ['--registry-source-root', str(registry)]
+        crate = self.supplement_fixture(crate_root=registry)
         original = copy.deepcopy(self.entry)
-        mutations = [lambda e: e.update(version='9'),
-                     lambda e: e.update(crate_revision='c' * 40),
+        mutations = [lambda e: e.update(crate_revision='c' * 40),
                      lambda e: e.update(path_in_vcs='other'),
                      lambda e: e.update(repository='https://github.com/example/other'),
                      lambda e: e.update(license_expression='Apache-2.0'),
@@ -180,9 +220,15 @@ class AuditTests(LinuxFixture):
         self.failure('missing supplement file: fonts@1.2.3')
         self.entry = copy.deepcopy(original)
         self.save_supplement()
-        (self.supplements / self.entry['files'][0]['path']).write_text('tampered')
+        payload = self.supplements / self.entry['files'][0]['path']
+        original_bytes = payload.read_bytes()
+        payload.write_text('tampered')
         self.snapshot()
         self.failure('supplement hash mismatch: fonts@1.2.3')
+        payload.write_bytes(original_bytes)
+        self.snapshot()
+        (crate / '.cargo_vcs_info.json').unlink()
+        self.failure('supplement provenance mismatch: fonts@1.2.3')
 
     def test_nested_font_witnesses_cannot_supply_crate_mit(self):
         (self.crate / 'fonts/UFL.txt').write_text('UBUNTU FONT LICENCE Version 1.0\n')
