@@ -237,6 +237,17 @@ atomic; simultaneous desktop instances use last-writer-wins. No other settings o
 sender/LED files are read or saved. Library/embedding `EmoteApp::new(receiver)`
 remains filesystem-free; only the native entry point opts in by supplying the path.
 
+## Linux prerelease tar.gz
+
+For clean-source Linux x86_64 GNU packaging, original dependency notices,
+SHA-256 and verification instructions, see the [Linux release guide](docs/linux-release.md).
+The scripts require offline locked dependencies and never publish or launch the app:
+
+```sh
+python3 -B scripts/audit_linux_licenses.py --help
+python3 -B scripts/package_linux.py --help
+```
+
 ## macOS app and ZIP
 
 Local packaging is the default. Prerelease packaging adds clean-source and
