@@ -13,7 +13,8 @@ import tempfile
 # Imported helpers are pure; Darwin inventories, supplements and exceptions are
 # deliberately not used. Avoid generating caches in a clean source checkout.
 sys.dont_write_bytecode = True
-from audit_macos_licenses import digest, select_license, audit_files, summary, beneath
+from audit_macos_licenses import (digest, select_license, audit_files, summary, beneath,
+                                  normalized_repository, supplement_path)
 
 TARGET = 'x86_64-unknown-linux-gnu'
 REGISTRY = (Path(os.environ.get('CARGO_HOME') or Path.home() / '.cargo') /
@@ -117,6 +118,88 @@ def notices(crate, root):
     return payload
 
 
+def supplemental_notices(package, crate, root, key):
+    """Linux-only originals. Never import Darwin inventory or exceptions."""
+    base = root / 'scripts/linux-license-supplements'
+    manifest_path = supplement_path(base, 'manifest.json')
+    if not manifest_path.exists():
+        return {}, None, []
+    try:
+        manifest = json.loads(manifest_path.read_bytes())
+        entries = manifest['packages']
+        identities = [(e['name'], e['version']) for e in entries]
+        if manifest['schema_version'] != 1 or len(identities) != len(set(identities)):
+            raise ValueError()
+        candidates = [e for e in entries if e['name'] == package['name']]
+        if not candidates:
+            return {}, None, []
+        entry = next(e for e in candidates if e['version'] == package['version'])
+        vcs = json.loads(source_file(crate / '.cargo_vcs_info.json', root).read_bytes())
+        revision, notice_revision = entry['crate_revision'], entry['notice_revision']
+        kind = entry['provenance_kind']
+        if (entry['repository'] != normalized_repository(package['repository']) or
+                entry['license_expression'] != package['license'] or
+                not re.fullmatch(r'[0-9a-f]{40}', revision) or
+                not re.fullmatch(r'[0-9a-f]{40}', notice_revision) or
+                vcs['git']['sha1'] != revision or
+                vcs.get('path_in_vcs', '') != entry['path_in_vcs']):
+            raise ValueError()
+        if kind == 'exact-crate-revision':
+            if notice_revision != revision or 'release_tag' in entry:
+                raise ValueError()
+        elif kind == 'same-version-upstream-release':
+            if entry['release_tag'] not in (package['version'], 'v' + package['version']):
+                raise ValueError()
+        else:
+            raise ValueError()
+        if not isinstance(entry['files'], list) or not entry['files']:
+            raise ValueError()
+        records, destinations = [], set()
+        for record in entry['files']:
+            relative, sha, name = record['path'], record['sha256'], record['notice_path']
+            if (not re.fullmatch(r'[0-9a-f]{64}', sha) or relative != 'files/' + sha or
+                    name in destinations or not isinstance(name, str) or
+                    name.startswith('/') or '\\' in name or
+                    any(p in ('', '.', '..') for p in name.split('/'))):
+                raise ValueError()
+            destinations.add(name)
+            if record['role'] == 'source-attribution':
+                # Exact prefix bytes of the published crate's source, not a
+                # newly written notice or a claimed upstream-file retrieval.
+                source = record['crate_path']
+                if (source != name or not isinstance(record['prefix_bytes'], int) or
+                        record['prefix_bytes'] <= 0 or
+                        record['upstream_url'] != 'crate-source:' + key + '/' + source):
+                    raise ValueError()
+            elif record['role'] in ('license', 'attribution'):
+                repo_path = entry['repository'].removeprefix('https://github.com/')
+                expected = ('https://raw.githubusercontent.com/' + repo_path + '/' +
+                            notice_revision + '/' + name)
+                if not entry['repository'].startswith('https://github.com/') or record['upstream_url'] != expected:
+                    raise ValueError()
+            else:
+                raise ValueError()
+            records.append((record, supplement_path(base, relative)))
+    except (OSError, ValueError, KeyError, TypeError, StopIteration):
+        raise RuntimeError('supplement provenance mismatch: ' + key) from None
+    payload, license_texts = {}, []
+    for record, path in records:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            raise RuntimeError('missing supplement file: ' + key) from None
+        if digest(data) != record['sha256'] or not data.strip():
+            raise RuntimeError('supplement hash mismatch: ' + key)
+        if record['role'] == 'source-attribution':
+            source = source_file(crate / record['crate_path'], root)
+            if source.read_bytes()[:record['prefix_bytes']] != data:
+                raise RuntimeError('supplement source attribution mismatch: ' + key)
+        if record['role'] == 'license':
+            license_texts.append(re.sub(r'\s+', ' ', data.decode(errors='replace').lower()))
+        payload['supplemental/' + record['notice_path']] = data
+    return payload, entry, license_texts
+
+
 def inventory(root):
     state = source_state(root)
     cargo = shutil.which('cargo')
@@ -150,9 +233,18 @@ def inventory(root):
                          for name, data in files.items()
                          if len(Path(name).parts) == 1 and re.match(
                              r'^(licen[cs]e|copying|unlicense|copyright)', name, re.I)]
+        supplements, provenance, supplement_texts = supplemental_notices(package, crate, root, key)
+        files.update(supplements)
+        license_texts.extend(supplement_texts)
         for license_id in selected:
+            witnesses = license_texts
+            # These are font grants only: nested font MIT must never witness
+            # the crate's MIT grant. Preserve every original font payload.
+            font_path = {'OFL-1.1': 'fonts/OFL.txt', 'Ubuntu-font-1.0': 'fonts/UFL.txt'}.get(license_id)
+            if font_path in files:
+                witnesses = [*witnesses, re.sub(r'\s+', ' ', files[font_path].decode(errors='replace').lower())]
             if not any(all(marker in text for marker in WITNESSES[license_id])
-                       for text in license_texts):
+                       for text in witnesses):
                 gaps.append(key + ' (' + license_id + ')')
         records = []
         for name, data in sorted(files.items()):
@@ -162,7 +254,8 @@ def inventory(root):
         packages[key] = {'name': package['name'], 'version': package['version'],
                          'license': package['license'], 'selected_licenses': selected,
                          'targets': [TARGET], 'files': records,
-                         'notice_provenance': 'original files from resolved Cargo package'}
+                         'notice_provenance': (provenance if provenance is not None else
+                                               'original files from resolved Cargo package')}
     if gaps:
         raise RuntimeError('no original license notices: ' + '; '.join(sorted(gaps)))
     frozen(state, root)
@@ -209,6 +302,8 @@ def generate(output, root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__ +
         ' Uses locked offline Linux platform metadata and SHA256; missing original notices fail closed. '
+        'Linux supplements retain pinned original bytes and exact-crate or disclosed same-version '
+        'provenance. Only fonts/OFL.txt and fonts/UFL.txt may supply nested font-grant witnesses. '
         'No Darwin exceptions or generic SPDX substitutes are approved for Linux.')
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--output', type=Path, help='NEW directory outside source; existing parent required')

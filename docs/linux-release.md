@@ -77,19 +77,37 @@ SPDX parsing/selection and byte-inventory helpers are reused from the macOS
 module, **not** its Darwin closure, supplements or accepted exceptions. The first
 supported SPDX OR branch must have corresponding original license text;
 conservative text witnesses reject link-only declarations and unrelated font
-notices as substitutes for that grant. This intentionally can reject legitimate
-unrecognized license layouts; it must not be bypassed with a generic SPDX text.
-All available original notice/font payloads are retained, not only that witness.
+notices as substitutes for that grant. Only `fonts/OFL.txt` and `fonts/UFL.txt`
+can supply nested OFL-1.1 and Ubuntu-font-1.0 witnesses respectively; a nested font
+MIT notice cannot satisfy the crate's MIT grant. This intentionally can reject
+legitimate unrecognized license layouts; it must not be bypassed with a generic
+SPDX text. All available original notice/font payloads are retained, not only
+that witness.
 `notice_inventory_complete` is an inventory statement; `legal_audit_complete`
 remains **false** and is never inferred from it.
 
-If original notice text is absent, the auditor fails with exact package/version
-and selected-license gaps and creates no output. There is currently **no Linux
-supplement or license-exception fallback**. Resolve gaps only from authorized,
-authentic local source/package/version evidence under a separately reviewed
-change; never copy macOS exceptions as Linux approval, invent attribution, fetch
-without authorization, or replace a missing original with generic SPDX boilerplate.
-A real Linux closure audit must pass before a release package can be produced.
+Checked-in [Linux supplements](../scripts/linux-license-supplements/README.md)
+retain authentic upstream original bytes when published packages omit their root
+licenses. Each supplement binds package/version, declared SPDX, repository,
+published VCS revision/subdirectory, notice revision/path/URL, provenance kind
+and SHA256. Exact-crate provenance requires equal published/notice revisions.
+Eight egui-family 0.37.0 crates instead use **same-version upstream-release**
+notices at official release commit `841a328ba2dd8f6996beb7189ebb7fc00e668a2a`;
+this is explicitly **not** their unavailable published revision. Eframe 0.37.0
+uses its own exact published revision. AccessKit AUTHORS and Chromium's original
+BSD notice are retained; original published source-attribution prefixes are
+included and checked against the crate bytes for AccessKit and gl-rs crates.
+Supplement bytes and provenance are copied into the generated notice inventory
+and rederived on validation. The runtime auditor does not fetch anything.
+
+Missing, tampered or mismatched supplements fail closed; unresolved original-text
+gaps name the exact package/version and selected license and create no output.
+There are **no Linux license exceptions**. Resolve further gaps only from
+authorized, authentic evidence under a separately reviewed change; never copy
+macOS exceptions as Linux approval, invent attribution, fetch without authorization,
+or replace a missing original with generic SPDX boilerplate. A real Linux closure
+audit must pass before a release package can be produced. Supplements and a
+complete inventory still do not establish legal clearance.
 
 ## Verify and run the extracted executable
 

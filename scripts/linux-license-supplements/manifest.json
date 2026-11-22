@@ -1,0 +1,406 @@
+{
+  "packages": [
+    {
+      "crate_revision": "f3026222559c7f5f46d8f25cb7404de68eb149f0",
+      "files": [
+        {
+          "notice_path": "LICENSE-MIT",
+          "path": "files/23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "role": "license",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "upstream_url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-MIT"
+        },
+        {
+          "notice_path": "LICENSE-APACHE",
+          "path": "files/62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "role": "license",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "upstream_url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE-APACHE"
+        },
+        {
+          "notice_path": "AUTHORS",
+          "path": "files/3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502",
+          "role": "attribution",
+          "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502",
+          "upstream_url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/AUTHORS"
+        },
+        {
+          "notice_path": "LICENSE.chromium",
+          "path": "files/845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+          "role": "attribution",
+          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308",
+          "upstream_url": "https://raw.githubusercontent.com/AccessKit/accesskit/f3026222559c7f5f46d8f25cb7404de68eb149f0/LICENSE.chromium"
+        },
+        {
+          "crate_path": "src/lib.rs",
+          "notice_path": "src/lib.rs",
+          "path": "files/4f4962081b527daaf69ab962c0cf657a7b4ce0fefe26bbec6ddba15267ac1a71",
+          "prefix_bytes": 221,
+          "role": "source-attribution",
+          "sha256": "4f4962081b527daaf69ab962c0cf657a7b4ce0fefe26bbec6ddba15267ac1a71",
+          "upstream_url": "crate-source:accesskit@0.25.2/src/lib.rs"
+        }
+      ],
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "accesskit",
+      "notice_revision": "f3026222559c7f5f46d8f25cb7404de68eb149f0",
+      "path_in_vcs": "accesskit",
+      "provenance_kind": "exact-crate-revision",
+      "repository": "https://github.com/AccessKit/accesskit",
+      "version": "0.25.2"
+    },
+    {
+      "crate_revision": "7c0b40402271e8d40cda69f87cf3c2617c2e4382",
+      "files": [
+        {
+          "notice_path": "LICENSE-MIT",
+          "path": "files/95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "role": "license",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
+        },
+        {
+          "notice_path": "LICENSE-APACHE",
+          "path": "files/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "role": "license",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+        }
+      ],
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "ecolor",
+      "notice_revision": "841a328ba2dd8f6996beb7189ebb7fc00e668a2a",
+      "path_in_vcs": "crates/ecolor",
+      "provenance_kind": "same-version-upstream-release",
+      "release_evidence": "Official annotated 0.37.0 tag resolves to notice_revision; workspace Cargo.toml declares 0.37.0. Published crate revision notices unavailable (404).",
+      "release_evidence_url": "https://api.github.com/repos/emilk/egui/git/tags/418687fa18fdac8a9b1b6c8f4a2eb1afd2df4c47",
+      "release_tag": "0.37.0",
+      "repository": "https://github.com/emilk/egui",
+      "version": "0.37.0"
+    },
+    {
+      "crate_revision": "3c6eb8261c3293ad9c7ea1ed58487e038860ebef",
+      "files": [
+        {
+          "notice_path": "LICENSE-MIT",
+          "path": "files/95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "role": "license",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/3c6eb8261c3293ad9c7ea1ed58487e038860ebef/LICENSE-MIT"
+        },
+        {
+          "notice_path": "LICENSE-APACHE",
+          "path": "files/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "role": "license",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/3c6eb8261c3293ad9c7ea1ed58487e038860ebef/LICENSE-APACHE"
+        }
+      ],
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "eframe",
+      "notice_revision": "3c6eb8261c3293ad9c7ea1ed58487e038860ebef",
+      "path_in_vcs": "crates/eframe",
+      "provenance_kind": "exact-crate-revision",
+      "repository": "https://github.com/emilk/egui",
+      "version": "0.37.0"
+    },
+    {
+      "crate_revision": "7c0b40402271e8d40cda69f87cf3c2617c2e4382",
+      "files": [
+        {
+          "notice_path": "LICENSE-MIT",
+          "path": "files/95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "role": "license",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
+        },
+        {
+          "notice_path": "LICENSE-APACHE",
+          "path": "files/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "role": "license",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+        }
+      ],
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "egui-wgpu",
+      "notice_revision": "841a328ba2dd8f6996beb7189ebb7fc00e668a2a",
+      "path_in_vcs": "crates/egui-wgpu",
+      "provenance_kind": "same-version-upstream-release",
+      "release_evidence": "Official annotated 0.37.0 tag resolves to notice_revision; workspace Cargo.toml declares 0.37.0. Published crate revision notices unavailable (404).",
+      "release_evidence_url": "https://api.github.com/repos/emilk/egui/git/tags/418687fa18fdac8a9b1b6c8f4a2eb1afd2df4c47",
+      "release_tag": "0.37.0",
+      "repository": "https://github.com/emilk/egui",
+      "version": "0.37.0"
+    },
+    {
+      "crate_revision": "7c0b40402271e8d40cda69f87cf3c2617c2e4382",
+      "files": [
+        {
+          "notice_path": "LICENSE-MIT",
+          "path": "files/95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "role": "license",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
+        },
+        {
+          "notice_path": "LICENSE-APACHE",
+          "path": "files/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "role": "license",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+        }
+      ],
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "egui-winit",
+      "notice_revision": "841a328ba2dd8f6996beb7189ebb7fc00e668a2a",
+      "path_in_vcs": "crates/egui-winit",
+      "provenance_kind": "same-version-upstream-release",
+      "release_evidence": "Official annotated 0.37.0 tag resolves to notice_revision; workspace Cargo.toml declares 0.37.0. Published crate revision notices unavailable (404).",
+      "release_evidence_url": "https://api.github.com/repos/emilk/egui/git/tags/418687fa18fdac8a9b1b6c8f4a2eb1afd2df4c47",
+      "release_tag": "0.37.0",
+      "repository": "https://github.com/emilk/egui",
+      "version": "0.37.0"
+    },
+    {
+      "crate_revision": "7c0b40402271e8d40cda69f87cf3c2617c2e4382",
+      "files": [
+        {
+          "notice_path": "LICENSE-MIT",
+          "path": "files/95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "role": "license",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
+        },
+        {
+          "notice_path": "LICENSE-APACHE",
+          "path": "files/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "role": "license",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+        }
+      ],
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "egui",
+      "notice_revision": "841a328ba2dd8f6996beb7189ebb7fc00e668a2a",
+      "path_in_vcs": "crates/egui",
+      "provenance_kind": "same-version-upstream-release",
+      "release_evidence": "Official annotated 0.37.0 tag resolves to notice_revision; workspace Cargo.toml declares 0.37.0. Published crate revision notices unavailable (404).",
+      "release_evidence_url": "https://api.github.com/repos/emilk/egui/git/tags/418687fa18fdac8a9b1b6c8f4a2eb1afd2df4c47",
+      "release_tag": "0.37.0",
+      "repository": "https://github.com/emilk/egui",
+      "version": "0.37.0"
+    },
+    {
+      "crate_revision": "7c0b40402271e8d40cda69f87cf3c2617c2e4382",
+      "files": [
+        {
+          "notice_path": "LICENSE-MIT",
+          "path": "files/95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "role": "license",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
+        },
+        {
+          "notice_path": "LICENSE-APACHE",
+          "path": "files/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "role": "license",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+        }
+      ],
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "egui_glow",
+      "notice_revision": "841a328ba2dd8f6996beb7189ebb7fc00e668a2a",
+      "path_in_vcs": "crates/egui_glow",
+      "provenance_kind": "same-version-upstream-release",
+      "release_evidence": "Official annotated 0.37.0 tag resolves to notice_revision; workspace Cargo.toml declares 0.37.0. Published crate revision notices unavailable (404).",
+      "release_evidence_url": "https://api.github.com/repos/emilk/egui/git/tags/418687fa18fdac8a9b1b6c8f4a2eb1afd2df4c47",
+      "release_tag": "0.37.0",
+      "repository": "https://github.com/emilk/egui",
+      "version": "0.37.0"
+    },
+    {
+      "crate_revision": "7c0b40402271e8d40cda69f87cf3c2617c2e4382",
+      "files": [
+        {
+          "notice_path": "LICENSE-MIT",
+          "path": "files/95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "role": "license",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
+        },
+        {
+          "notice_path": "LICENSE-APACHE",
+          "path": "files/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "role": "license",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+        }
+      ],
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "emath",
+      "notice_revision": "841a328ba2dd8f6996beb7189ebb7fc00e668a2a",
+      "path_in_vcs": "crates/emath",
+      "provenance_kind": "same-version-upstream-release",
+      "release_evidence": "Official annotated 0.37.0 tag resolves to notice_revision; workspace Cargo.toml declares 0.37.0. Published crate revision notices unavailable (404).",
+      "release_evidence_url": "https://api.github.com/repos/emilk/egui/git/tags/418687fa18fdac8a9b1b6c8f4a2eb1afd2df4c47",
+      "release_tag": "0.37.0",
+      "repository": "https://github.com/emilk/egui",
+      "version": "0.37.0"
+    },
+    {
+      "crate_revision": "7c0b40402271e8d40cda69f87cf3c2617c2e4382",
+      "files": [
+        {
+          "notice_path": "LICENSE-MIT",
+          "path": "files/95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "role": "license",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
+        },
+        {
+          "notice_path": "LICENSE-APACHE",
+          "path": "files/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "role": "license",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+        }
+      ],
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "epaint",
+      "notice_revision": "841a328ba2dd8f6996beb7189ebb7fc00e668a2a",
+      "path_in_vcs": "crates/epaint",
+      "provenance_kind": "same-version-upstream-release",
+      "release_evidence": "Official annotated 0.37.0 tag resolves to notice_revision; workspace Cargo.toml declares 0.37.0. Published crate revision notices unavailable (404).",
+      "release_evidence_url": "https://api.github.com/repos/emilk/egui/git/tags/418687fa18fdac8a9b1b6c8f4a2eb1afd2df4c47",
+      "release_tag": "0.37.0",
+      "repository": "https://github.com/emilk/egui",
+      "version": "0.37.0"
+    },
+    {
+      "crate_revision": "7c0b40402271e8d40cda69f87cf3c2617c2e4382",
+      "files": [
+        {
+          "notice_path": "LICENSE-MIT",
+          "path": "files/95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "role": "license",
+          "sha256": "95ca92f5f8ea5231f1580b3a2a799e8260af3114b900e1def5355a7f44bcf60c",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-MIT"
+        },
+        {
+          "notice_path": "LICENSE-APACHE",
+          "path": "files/8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "role": "license",
+          "sha256": "8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90",
+          "upstream_url": "https://raw.githubusercontent.com/emilk/egui/841a328ba2dd8f6996beb7189ebb7fc00e668a2a/LICENSE-APACHE"
+        }
+      ],
+      "license_expression": "(MIT OR Apache-2.0) AND OFL-1.1 AND Ubuntu-font-1.0",
+      "name": "epaint_default_fonts",
+      "notice_revision": "841a328ba2dd8f6996beb7189ebb7fc00e668a2a",
+      "path_in_vcs": "crates/epaint_default_fonts",
+      "provenance_kind": "same-version-upstream-release",
+      "release_evidence": "Official annotated 0.37.0 tag resolves to notice_revision; workspace Cargo.toml declares 0.37.0. Published crate revision notices unavailable (404).",
+      "release_evidence_url": "https://api.github.com/repos/emilk/egui/git/tags/418687fa18fdac8a9b1b6c8f4a2eb1afd2df4c47",
+      "release_tag": "0.37.0",
+      "repository": "https://github.com/emilk/egui",
+      "version": "0.37.0"
+    },
+    {
+      "crate_revision": "ea503e8d5fb6d73c6030e6191ce738cd3bf3433e",
+      "files": [
+        {
+          "notice_path": "LICENSE",
+          "path": "files/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "role": "license",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "upstream_url": "https://raw.githubusercontent.com/brendanzab/gl-rs/ea503e8d5fb6d73c6030e6191ce738cd3bf3433e/LICENSE"
+        },
+        {
+          "crate_path": "lib.rs",
+          "notice_path": "lib.rs",
+          "path": "files/7eb15307bafc2e83b48490a5a4f1024f860d00c98b173fb5b8fa11e4e6692a31",
+          "prefix_bytes": 621,
+          "role": "source-attribution",
+          "sha256": "7eb15307bafc2e83b48490a5a4f1024f860d00c98b173fb5b8fa11e4e6692a31",
+          "upstream_url": "crate-source:gl_generator@0.14.0/lib.rs"
+        }
+      ],
+      "license_expression": "Apache-2.0",
+      "name": "gl_generator",
+      "notice_revision": "ea503e8d5fb6d73c6030e6191ce738cd3bf3433e",
+      "path_in_vcs": "",
+      "provenance_kind": "exact-crate-revision",
+      "repository": "https://github.com/brendanzab/gl-rs",
+      "version": "0.14.0"
+    },
+    {
+      "crate_revision": "f150967b1c44ae888e6676f93f639ebc82771bdc",
+      "files": [
+        {
+          "notice_path": "LICENSE",
+          "path": "files/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "role": "license",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "upstream_url": "https://raw.githubusercontent.com/brendanzab/gl-rs/f150967b1c44ae888e6676f93f639ebc82771bdc/LICENSE"
+        },
+        {
+          "crate_path": "src/lib.rs",
+          "notice_path": "src/lib.rs",
+          "path": "files/7eb15307bafc2e83b48490a5a4f1024f860d00c98b173fb5b8fa11e4e6692a31",
+          "prefix_bytes": 621,
+          "role": "source-attribution",
+          "sha256": "7eb15307bafc2e83b48490a5a4f1024f860d00c98b173fb5b8fa11e4e6692a31",
+          "upstream_url": "crate-source:khronos_api@3.1.0/src/lib.rs"
+        }
+      ],
+      "license_expression": "Apache-2.0",
+      "name": "khronos_api",
+      "notice_revision": "f150967b1c44ae888e6676f93f639ebc82771bdc",
+      "path_in_vcs": "",
+      "provenance_kind": "exact-crate-revision",
+      "repository": "https://github.com/brendanzab/gl-rs",
+      "version": "3.1.0"
+    },
+    {
+      "crate_revision": "8271551172eb6fa4cba47369aedd93790c623df9",
+      "files": [
+        {
+          "notice_path": "LICENSE-MIT",
+          "path": "files/c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333",
+          "role": "license",
+          "sha256": "c8167fdeeed46d3f244d3f85c5bf998ce889343691c32be2c61a8bc4b5c08333",
+          "upstream_url": "https://raw.githubusercontent.com/aclysma/profiling/8271551172eb6fa4cba47369aedd93790c623df9/LICENSE-MIT"
+        }
+      ],
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "profiling",
+      "notice_revision": "8271551172eb6fa4cba47369aedd93790c623df9",
+      "path_in_vcs": "profiling",
+      "provenance_kind": "exact-crate-revision",
+      "repository": "https://github.com/aclysma/profiling",
+      "version": "1.0.18"
+    },
+    {
+      "crate_revision": "8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4",
+      "files": [
+        {
+          "notice_path": "LICENSE",
+          "path": "files/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "role": "license",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "upstream_url": "https://raw.githubusercontent.com/gfx-rs/rspirv/8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4/LICENSE"
+        }
+      ],
+      "license_expression": "Apache-2.0",
+      "name": "spirv",
+      "notice_revision": "8afc3d0ac8e158128cd1410bb2e4b4c26ab11bb4",
+      "path_in_vcs": "spirv",
+      "provenance_kind": "exact-crate-revision",
+      "repository": "https://github.com/gfx-rs/rspirv",
+      "version": "0.4.0+sdk-1.4.341.0"
+    }
+  ],
+  "schema_version": 1
+}
