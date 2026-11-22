@@ -120,9 +120,9 @@ def inspect_elf(binary, root):
                     destination.resolve() != approved.resolve() or
                     not any(base in approved.resolve().parents for base in system_roots)):
                 raise RuntimeError('unrecognized or private native dependency resolution')
-            # Some GNU binaries explicitly NEEDED the loader's SONAME. Only
-            # a verified loader observation (direct or alias) closes that need.
-            libraries.add(approved.name)
+            # Count the verified loader only if declared in DT_NEEDED.
+            if approved.name in needed:
+                libraries.add(approved.name)
         elif re.fullmatch(r'/(?:usr/)?lib(?:64)?/[^ ]+ \(0x[0-9a-fA-F]+\)', line):
             continue
         elif re.fullmatch(r'linux-vdso\.so\.1 \(0x[0-9a-fA-F]+\)', line):

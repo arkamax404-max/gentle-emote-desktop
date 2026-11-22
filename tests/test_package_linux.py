@@ -103,6 +103,7 @@ def fake_run(command, **kwargs):
                 if scenario == 'loader-needed-wrong': destination = fixture_libraries['libc.so.6']
                 loader_line = requested + ' => ' + destination + ' (0x456)\n'
                 if scenario == 'loader-needed-direct': loader_line = requested + ' (0x456)\n'
+                if scenario == 'loader-needed-omitted': loader_line = ''
                 out = ''.join(name + ' => ' + path + ' (0x123)\n'
                               for name, path in fixture_libraries.items()) + loader_line
     else:
@@ -294,7 +295,8 @@ class PackageTests(LinuxFixture):
                          (0, 'Packaged: ' + str(self.output) + '\n', ''))
         evidence = json.loads((self.output / 'verification.json').read_text())
         self.assertEqual(evidence['interpreter'], '/lib64/ld-linux-x86-64.so.2')
-        self.assertEqual(evidence['resolved_libraries'], ['ld-linux-x86-64.so.2', 'libc.so.6'])
+        self.assertEqual(evidence['needed'], ['libc.so.6'])
+        self.assertEqual(evidence['resolved_libraries'], ['libc.so.6'])
         self.assertNotIn('fixture-loader', json.dumps(evidence))
         self.assertTrue(evidence['archive_verified'])
         self.assertFalse(evidence['runtime_verified'])
@@ -326,6 +328,8 @@ class PackageTests(LinuxFixture):
             with self.subTest(scenario=scenario):
                 self.rejected(self.package(scenario), 'unrecognized or private native dependency resolution')
                 self.assertEqual(snapshot(), before)
+        self.rejected(self.package('loader-needed-omitted'), 'unresolved native dependency')
+        self.assertEqual(snapshot(), before)
 
     def test_archive_modes_hashes_provenance_and_wrapper_spaces(self):
         self.generate()
@@ -362,6 +366,11 @@ class PackageTests(LinuxFixture):
                 self.assertEqual(record, {'sha256': hashlib.sha256(data).hexdigest(),
                                           'mode': member.mode, 'size': len(data)})
                 self.assertEqual(member.mode, 0o755 if member.name.endswith('/' + NAME) else 0o644)
+                if member.name.endswith('/packaging-receipt.json'):
+                    receipt = json.loads(data)
+                    self.assertEqual(receipt['needed'], ['libc.so.6'])
+                    self.assertEqual(receipt['resolved_libraries'], ['libc.so.6'])
+        self.assertEqual(evidence['resolved_libraries'], ['libc.so.6'])
         probe = json.loads((self.base / 'probe.json').read_text())
         self.assertEqual(probe[:3], ['--crate-name', 'fixture', 'argument with spaces'])
         self.assertIn('--remap-path-prefix=' + str(self.root) + '=/source', probe)
